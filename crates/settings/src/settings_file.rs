@@ -146,6 +146,9 @@ pub fn test_settings() -> &'static str {
             }),
             &mut value,
         );
+        // Code lenses are on by default, but they add LSP requests that tests of other features
+        // don't expect; code lens tests turn them on themselves.
+        util::merge_non_null_json_value_into(serde_json::json!({ "code_lens": "off" }), &mut value);
         #[cfg(target_os = "windows")]
         util::merge_non_null_json_value_into(
             serde_json::json!({

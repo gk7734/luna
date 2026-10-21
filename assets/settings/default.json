@@ -448,7 +448,7 @@
   //      "code_lens": "on",
   // 3. Display code lenses in the code action menu.
   //      "code_lens": "menu",
-  "code_lens": "off",
+  "code_lens": "on",
   // What to do when go to definition yields no results.
   //
   // 1. Do nothing: `none`

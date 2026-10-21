@@ -235,7 +235,7 @@ pub struct EditorSettingsContent {
 
     /// Whether and how to display code lenses from language servers.
     ///
-    /// Default: "off"
+    /// Default: "on"
     pub code_lens: Option<CodeLens>,
 
     /// How to render LSP `textDocument/documentColor` colors in the editor.

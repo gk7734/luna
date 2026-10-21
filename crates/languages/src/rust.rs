@@ -598,6 +598,32 @@ impl LspAdapter for RustLspAdapter {
         Some(label)
     }
 
+    /// Defaults that the user's `initialization_options` for rust-analyzer are merged over.
+    async fn initialization_options(
+        self: Arc<Self>,
+        _: &Arc<dyn LspAdapterDelegate>,
+        _: &mut AsyncApp,
+    ) -> Result<Option<serde_json::Value>> {
+        Ok(Some(json!({
+            // Priming analyzes every crate up front, which on large workspaces more than doubles
+            // the server's memory (10 GB peak instead of 4 GB on Zed's own repository); without
+            // it, crates are analyzed as files using them are opened.
+            "cachePriming": { "enable": false },
+            "lens": {
+                // The gutter already has run buttons for tests and binaries.
+                "run": { "enable": false },
+                "debug": { "enable": false },
+                // Usage counts above items, which are only computed for the lenses on screen.
+                "references": {
+                    "adt": { "enable": true },
+                    "enumVariant": { "enable": true },
+                    "method": { "enable": true },
+                    "trait": { "enable": true },
+                },
+            },
+        })))
+    }
+
     async fn initialization_options_schema(
         self: Arc<Self>,
         delegate: &Arc<dyn LspAdapterDelegate>,
