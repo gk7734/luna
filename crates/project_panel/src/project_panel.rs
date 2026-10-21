@@ -73,8 +73,9 @@ use util::{
     rel_path::{RelPath, RelPathBuf},
 };
 use workspace::{
-    DraggedSelection, OpenInTerminal, OpenMode, OpenOptions, OpenVisible, PreviewTabsSettings,
-    SelectedEntry, SplitDirection, Workspace, WorkspaceSettings, copy_file_permalink,
+    DraggedSelection, OpenInGhostty, OpenInTerminal, OpenMode, OpenOptions, OpenVisible,
+    PreviewTabsSettings, SelectedEntry, SplitDirection, Workspace, WorkspaceSettings,
+    copy_file_permalink,
     dock::{DockPosition, Panel, PanelEvent},
     focus_follows_mouse::FocusFollowsMouse as _,
     notifications::{DetachAndPromptErr, NotifyResultExt, NotifyTaskExt},
@@ -1205,6 +1206,9 @@ impl ProjectPanel {
                                 menu.action("Open in Default App", Box::new(OpenWithSystem))
                             })
                             .action("Open in Terminal", Box::new(OpenInTerminal))
+                            .when(is_local, |menu| {
+                                menu.action("Open in Ghostty", Box::new(OpenInGhostty))
+                            })
                             .when(is_markdown, |menu| {
                                 menu.action("Open Markdown Preview", Box::new(OpenMarkdownPreview))
                             })
@@ -4164,6 +4168,28 @@ impl ProjectPanel {
         if let Some((worktree, entry)) = self.selected_entry(cx) {
             let abs_path = worktree.absolutize(&entry.path);
             cx.open_with_system(&abs_path);
+        }
+    }
+
+    fn open_in_ghostty(&mut self, _: &OpenInGhostty, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((worktree, entry)) = self.selected_sub_entry(cx) else {
+            return;
+        };
+        let abs_path = match &entry.canonical_path {
+            Some(canonical_path) => canonical_path.to_path_buf(),
+            None => worktree.read(cx).absolutize(&entry.path),
+        };
+        let directory = if entry.is_dir() {
+            Some(abs_path)
+        } else {
+            abs_path.parent().map(|path| path.to_path_buf())
+        };
+        if let Some(directory) = directory {
+            workspace::open_in_ghostty(directory, cx).detach_and_notify_err(
+                self.workspace.clone(),
+                window,
+                cx,
+            );
         }
     }
 
@@ -7674,6 +7700,7 @@ impl Render for ProjectPanel {
                         el.on_action(cx.listener(Self::reveal_in_finder))
                             .on_action(cx.listener(Self::open_system))
                             .on_action(cx.listener(Self::open_in_terminal))
+                            .on_action(cx.listener(Self::open_in_ghostty))
                     },
                 )
                 .when(project.is_via_remote_server(), |el| {

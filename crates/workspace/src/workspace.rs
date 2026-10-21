@@ -442,6 +442,8 @@ actions!(
         OpenFiles,
         /// Opens the current location in terminal.
         OpenInTerminal,
+        /// Opens the current location in a new Ghostty window.
+        OpenInGhostty,
         /// Opens the component preview.
         OpenComponentPreview,
         /// Reloads the active item.
@@ -836,6 +838,30 @@ impl PartialEq for Toast {
             && self.message == other.message
             && self.on_click.is_some() == other.on_click.is_some()
     }
+}
+
+/// Opens `directory` in a new window of the Ghostty terminal app.
+pub fn open_in_ghostty(directory: PathBuf, cx: &App) -> Task<anyhow::Result<()>> {
+    cx.background_spawn(async move {
+        #[cfg(target_os = "macos")]
+        let output = util::command::new_command("open")
+            .args(["-a", "Ghostty"])
+            .arg(&directory)
+            .output()
+            .await;
+        #[cfg(not(target_os = "macos"))]
+        let output = util::command::new_command("ghostty")
+            .arg(format!("--working-directory={}", directory.display()))
+            .output()
+            .await;
+        let output = output.context("couldn't run Ghostty")?;
+        anyhow::ensure!(
+            output.status.success(),
+            "couldn't open Ghostty; is it installed? {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        Ok(())
+    })
 }
 
 /// Opens a new terminal with the specified working directory.

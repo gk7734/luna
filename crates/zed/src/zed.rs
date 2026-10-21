@@ -102,7 +102,9 @@ use util::rel_path::RelPath;
 use util::{ResultExt, asset_str, maybe};
 use uuid::Uuid;
 use vim_mode_setting::VimModeSetting;
-use workspace::notifications::{NotificationId, dismiss_app_notification, show_app_notification};
+use workspace::notifications::{
+    NotificationId, NotifyTaskExt as _, dismiss_app_notification, show_app_notification,
+};
 
 use workspace::{
     AppState, MultiWorkspace, NewFile, NewWindow, OpenLog, Toast, Workspace, WorkspaceSettings,
@@ -1356,6 +1358,25 @@ fn register_actions(
                 cx,
                 |_, _, _| None,
             );
+        })
+        .register_action(|workspace, _: &workspace::OpenInGhostty, window, cx| {
+            let project = workspace.project().read(cx);
+            if !project.is_local() {
+                return;
+            }
+            let directory = workspace
+                .active_item(cx)
+                .and_then(|item| item.project_path(cx))
+                .and_then(|project_path| project.worktree_for_id(project_path.worktree_id, cx))
+                .or_else(|| project.visible_worktrees(cx).next())
+                .map(|worktree| worktree.read(cx).abs_path().to_path_buf());
+            if let Some(directory) = directory {
+                workspace::open_in_ghostty(directory, cx).detach_and_notify_err(
+                    workspace.weak_handle(),
+                    window,
+                    cx,
+                );
+            }
         })
         .register_action(open_project_settings_file)
         .register_action(open_project_tasks_file)
