@@ -36,8 +36,25 @@ fn claude_json_path() -> PathBuf {
     paths::home_dir().join(".claude.json")
 }
 
-fn keychain_account_name() -> Result<String> {
+/// The account name on Claude Code's keychain item, which writes must match for Claude Code to
+/// find them. Only the item's attributes are read, which needs no permission.
+async fn claude_code_account_name() -> Result<String> {
+    if let Some(attributes) =
+        run_security(&["find-generic-password", "-s", CLAUDE_CODE_SERVICE]).await?
+        && let Some(account_name) = account_attribute(&attributes)
+    {
+        return Ok(account_name);
+    }
     std::env::var("USER").context("USER isn't set")
+}
+
+/// Parses `"acct"<blob>="name"` from `security`'s description of an item.
+fn account_attribute(attributes: &str) -> Option<String> {
+    let line = attributes
+        .lines()
+        .find(|line| line.trim_start().starts_with("\"acct\"<blob>="))?;
+    let value = line.split_once("<blob>=")?.1.trim();
+    Some(value.strip_prefix('"')?.strip_suffix('"')?.to_string())
 }
 
 /// The sign-in Claude Code currently uses, if it's signed in.
@@ -53,14 +70,14 @@ pub(crate) async fn current_login() -> Result<Option<ClaudeLogin>> {
 
 /// Makes Claude Code use `login`, or signs it out when there's none.
 pub(crate) async fn install_login(login: Option<&ClaudeLogin>) -> Result<()> {
-    let account_name = keychain_account_name()?;
     match login {
         Some(login) => {
+            let account_name = claude_code_account_name().await?;
             write_password(CLAUDE_CODE_SERVICE, &account_name, &login.credentials).await?;
             write_oauth_account(login.oauth_account.clone())
         }
         None => {
-            delete_password(CLAUDE_CODE_SERVICE, &account_name).await?;
+            delete_all_passwords(CLAUDE_CODE_SERVICE).await?;
             write_oauth_account(None)
         }
     }
@@ -119,6 +136,20 @@ async fn write_password(service: &str, account: &str, password: &str) -> Result<
 async fn delete_password(service: &str, account: &str) -> Result<()> {
     run_security(&["delete-generic-password", "-a", account, "-s", service]).await?;
     Ok(())
+}
+
+/// Deletes every item under `service`, whatever its account name, so the CLI finds none.
+async fn delete_all_passwords(service: &str) -> Result<()> {
+    // Bounded in case an item can't be deleted and keeps matching.
+    for _ in 0..16 {
+        if run_security(&["delete-generic-password", "-s", service])
+            .await?
+            .is_none()
+        {
+            return Ok(());
+        }
+    }
+    Err(anyhow!("couldn't remove the {service} keychain items"))
 }
 
 /// Returns the tool's output, or `None` when no keychain item matched.
@@ -180,6 +211,13 @@ fn write_oauth_account(oauth_account: Option<serde_json::Value>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_reads_the_account_attribute() {
+        let attributes = "keychain: \"/Users/someone/Library/Keychains/login.keychain-db\"\nattributes:\n    \"acct\"<blob>=\"someone\"\n    \"svce\"<blob>=\"Claude Code-credentials\"\n";
+        assert_eq!(account_attribute(attributes).as_deref(), Some("someone"));
+        assert_eq!(account_attribute("attributes:\n"), None);
+    }
 
     #[test]
     fn test_login_email_comes_from_the_account_details() {

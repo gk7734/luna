@@ -337,7 +337,13 @@ impl AiUsage {
                             if let Some(login) = claude_login::current_login().await? {
                                 claude_login::save_login(&previous.id, &login).await?;
                             }
-                            claude_login::install_login(None).await
+                            claude_login::install_login(None).await?;
+                            // A terminal that comes up signed in would add the same account twice.
+                            anyhow::ensure!(
+                                claude_login::current_login().await?.is_none(),
+                                "couldn't sign Claude Code out of the current account"
+                            );
+                            Ok(())
                         }
                         Provider::Codex => prepare_codex_home(&account.effective_config_dir()),
                     }
