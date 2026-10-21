@@ -78,7 +78,7 @@ use std::{
         Arc, Once, Weak,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const WINDOW_STATE_IVAR: &str = "windowState";
@@ -666,6 +666,12 @@ struct MacWindowState {
     cursor_style: CursorStyle,
     cursor_visible: Arc<AtomicBool>,
     frame_source: Option<WindowFrameSource>,
+    // The display link is paused while the window has no frame demand, so an idle window
+    // doesn't wake the main thread every vsync. The frame waker sets `frame_demanded` and,
+    // when paused, pokes the frame source so `step` restarts the link.
+    frame_link_paused: Arc<AtomicBool>,
+    frame_demanded: Arc<AtomicBool>,
+    last_frame_demand: Instant,
     renderer: renderer::Renderer,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     event_callback: Option<Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>>,
@@ -835,6 +841,8 @@ impl MacWindowState {
 
     fn start_display_link(&mut self) {
         self.stop_display_link();
+        self.frame_link_paused.store(false, Ordering::Relaxed);
+        self.last_frame_demand = Instant::now();
         unsafe {
             if !self
                 .native_window
@@ -848,16 +856,36 @@ impl MacWindowState {
             // AppKit can temporarily report no screen while displays are being reconfigured.
             return;
         };
-        let data = self.native_view.as_ptr() as *mut c_void;
-        self.frame_source
-            .get_or_insert_with(|| WindowFrameSource::new(data, step))
-            .start(display_id)
-            .log_err();
+        self.frame_source().start(display_id).log_err();
     }
 
     fn stop_display_link(&mut self) {
         if let Some(frame_source) = self.frame_source.as_mut() {
             frame_source.stop();
+        }
+    }
+
+    fn frame_source(&mut self) -> &mut WindowFrameSource {
+        let data = self.native_view.as_ptr() as *mut c_void;
+        self.frame_source
+            .get_or_insert_with(|| WindowFrameSource::new(data, step))
+    }
+
+    /// Longer than gpui's 1s of sustained presentation after high-rate input.
+    const FRAME_LINK_IDLE_TIMEOUT: Duration = Duration::from_millis(1500);
+
+    fn pause_display_link_if_idle(&mut self) {
+        let now = Instant::now();
+        if self.frame_demanded.swap(false, Ordering::Relaxed) {
+            self.last_frame_demand = now;
+        } else if now.duration_since(self.last_frame_demand) >= Self::FRAME_LINK_IDLE_TIMEOUT
+            && self
+                .frame_source
+                .as_ref()
+                .is_some_and(|source| source.is_running())
+        {
+            self.stop_display_link();
+            self.frame_link_paused.store(true, Ordering::Relaxed);
         }
     }
 
@@ -1101,6 +1129,9 @@ impl MacWindow {
                 cursor_style: CursorStyle::Arrow,
                 cursor_visible,
                 frame_source: None,
+                frame_link_paused: Arc::new(AtomicBool::new(false)),
+                frame_demanded: Arc::new(AtomicBool::new(false)),
+                last_frame_demand: Instant::now(),
                 renderer: renderer::new_renderer(
                     renderer_context,
                     native_window as *mut _,
@@ -1428,6 +1459,19 @@ fn if_window_not_closed(closed: Arc<AtomicBool>, f: impl FnOnce()) {
 impl PlatformWindow for MacWindow {
     fn bounds(&self) -> Bounds<Pixels> {
         self.0.as_ref().lock().bounds()
+    }
+
+    fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
+        let mut lock = self.0.lock();
+        let wake = lock.frame_source().wake_handle();
+        let paused = lock.frame_link_paused.clone();
+        let demanded = lock.frame_demanded.clone();
+        Some(Rc::new(move || {
+            demanded.store(true, Ordering::Relaxed);
+            if paused.load(Ordering::Relaxed) {
+                wake();
+            }
+        }))
     }
 
     fn window_bounds(&self) -> WindowBounds {
@@ -3345,6 +3389,9 @@ extern "C" fn step(view: *mut c_void) {
     let view = view as id;
     let window_state = unsafe { get_window_state(&*view) };
     let mut lock = window_state.lock();
+    if lock.frame_link_paused.load(Ordering::Relaxed) {
+        lock.start_display_link();
+    }
 
     if let Some(mut callback) = lock.request_frame_callback.take() {
         let (signal_at, signal_source) = lock
@@ -3361,7 +3408,9 @@ extern "C" fn step(view: *mut c_void) {
             signal_source,
             ..Default::default()
         });
-        window_state.lock().request_frame_callback = Some(callback);
+        let mut lock = window_state.lock();
+        lock.request_frame_callback = Some(callback);
+        lock.pause_display_link_if_idle();
     }
 }
 

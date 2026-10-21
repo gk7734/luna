@@ -333,6 +333,17 @@ impl WindowFrameSource {
         Ok(())
     }
 
+    pub fn is_running(&self) -> bool {
+        self.registration.is_some()
+    }
+
+    /// Delivers one frame request on the main queue, even while unsubscribed.
+    /// Safe to call after the window is closed: a cancelled source never runs its handler.
+    pub fn wake_handle(&self) -> impl Fn() + 'static {
+        let frame_requests = self.frame_requests.clone();
+        move || frame_requests.merge_data(1)
+    }
+
     pub fn take_signal(&self) -> Option<(Instant, FrameRequestSource)> {
         self.signal.take()
     }
