@@ -341,13 +341,18 @@ impl AiUsage {
         provider: Provider,
         cx: &mut Context<Self>,
     ) -> Task<Result<Account>> {
-        let number = self
+        // Counting accounts would reuse the number of one that's still there after removing an
+        // earlier one, and its id with it.
+        let id_for = |number: usize| format!("{}-{number}", provider.id_prefix());
+        let mut number = 2;
+        while self
             .added_accounts
             .iter()
-            .filter(|account| account.provider == provider)
-            .count()
-            + 2;
-        let id = format!("{}-{number}", provider.id_prefix());
+            .any(|account| account.id == id_for(number))
+        {
+            number += 1;
+        }
+        let id = id_for(number);
         let config_dir = provider
             .config_dir_env_var()
             .map(|_| paths::config_dir().join("ai-accounts").join(&id));
