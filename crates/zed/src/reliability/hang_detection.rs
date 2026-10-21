@@ -74,11 +74,14 @@ fn start_hang_detection(report_longer_then: Duration, client: Arc<Client>, cx: &
     // GPUI's final `Flush` poll runs during shutdown, concurrently with this
     // handler and within `SHUTDOWN_TIMEOUT`, so the last batch may miss this
     // flush.
-    match HangTelemetry::new(startup, telemetry::send_event).start(cx) {
-        Ok(()) => cx
-            .on_app_quit(move |_| client.telemetry().flush_events())
-            .detach(),
-        Err(error) => log::error!("failed to start hang reporting: {error}"),
+    // The monitor thread only feeds telemetry events, which are dropped when metrics are off.
+    if client.telemetry().metrics_enabled() {
+        match HangTelemetry::new(startup, telemetry::send_event).start(cx) {
+            Ok(()) => cx
+                .on_app_quit(move |_| client.telemetry().flush_events())
+                .detach(),
+            Err(error) => log::error!("failed to start hang reporting: {error}"),
+        }
     }
 
     let mut log = logging::Reporter::new(monitor_interval, report_longer_then, foreground_thread);
