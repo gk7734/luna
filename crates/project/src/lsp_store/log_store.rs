@@ -1,6 +1,9 @@
 use std::{
     collections::VecDeque,
-    sync::{Arc, Weak},
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -141,6 +144,9 @@ pub struct LanguageServerState {
     log_messages: VecDeque<LogMessage>,
     trace_messages: VecDeque<TraceMessage>,
     pub rpc_state: Option<LanguageServerRpcState>,
+    /// Mirrors `rpc_state.is_some()` for the server's io callback, which otherwise copies
+    /// every stdin/stdout message to the main thread only to drop it.
+    rpc_logging: Arc<AtomicBool>,
     pub trace_level: TraceValue,
     pub log_level: MessageType,
     io_logs_subscription: Option<lsp::Subscription>,
@@ -178,6 +184,8 @@ impl LanguageServerState {
         } else {
             self.rpc_state.take();
         }
+        self.rpc_logging
+            .store(self.rpc_state.is_some(), Ordering::Relaxed);
     }
 }
 
@@ -758,6 +766,7 @@ impl LogStore {
                     worktree_id: None,
                     server: server.as_ref().map(Arc::downgrade),
                     rpc_state: None,
+                    rpc_logging: Arc::default(),
                     log_messages: VecDeque::with_capacity(MAX_STORED_LOG_ENTRIES),
                     trace_messages: VecDeque::with_capacity(MAX_STORED_LOG_ENTRIES),
                     trace_level: TraceValue::Off,
@@ -786,7 +795,11 @@ impl LogStore {
             }
             if server_state.io_logs_subscription.is_none() {
                 let io_tx = self.io_tx.clone();
+                let rpc_logging = server_state.rpc_logging.clone();
                 server_state.io_logs_subscription = Some(server.on_io(move |io_kind, message| {
+                    if !matches!(io_kind, IoKind::StdErr) && !rpc_logging.load(Ordering::Relaxed) {
+                        return;
+                    }
                     let observed_at = Instant::now();
                     io_tx
                         .unbounded_send((
