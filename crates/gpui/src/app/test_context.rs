@@ -431,6 +431,11 @@ impl TestAppContext {
         self.test_platform.opened_url.borrow().clone()
     }
 
+    /// Sets whether the test platform reports Low Power Mode.
+    pub fn set_low_power_mode(&self, enabled: bool) {
+        self.test_platform.low_power_mode.set(enabled);
+    }
+
     /// Makes the test platform's spell checker flag `word`, suggesting `suggestions` for it.
     pub fn add_misspelled_word(&self, word: &str, suggestions: &[&str]) {
         self.test_platform.misspelled_words.borrow_mut().push((

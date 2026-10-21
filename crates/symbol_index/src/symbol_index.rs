@@ -24,6 +24,8 @@ use util::{ResultExt as _, rel_path::RelPath};
 /// Larger files are mostly generated or vendored, and parsing them would dominate indexing time.
 const MAX_INDEXED_FILE_SIZE: u64 = 512 * 1024;
 const INDEX_BATCH_SIZE: usize = 64;
+/// How often deferred indexing checks whether the system stopped saving energy.
+const ENERGY_SAVING_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub fn init(cx: &mut App) {
     usage::init(cx);
@@ -360,6 +362,12 @@ async fn run_indexer(
 ) {
     let db = cx.update(|cx| cache::SymbolIndexDb::global(cx));
     while let Some(first_job) = jobs.next().await {
+        // Like JetBrains' power save mode: background analysis waits while the system saves energy.
+        while cx.update(|cx| is_saving_energy(cx)) {
+            cx.background_executor()
+                .timer(ENERGY_SAVING_RECHECK_INTERVAL)
+                .await;
+        }
         // Bursts of file events queue the same file repeatedly; index each one once per batch.
         let mut batch = HashMap::default();
         batch.insert((first_job.worktree_id, first_job.path.clone()), first_job);
@@ -439,6 +447,14 @@ async fn index_file(
         return extract::FileIndex::default();
     };
     extract::index_text(&language, &text)
+}
+
+fn is_saving_energy(cx: &App) -> bool {
+    cx.is_low_power_mode()
+        || matches!(
+            cx.thermal_state(),
+            gpui::ThermalState::Serious | gpui::ThermalState::Critical
+        )
 }
 
 fn intern(interned_names: &mut HashSet<Arc<str>>, name: Arc<str>) -> Arc<str> {

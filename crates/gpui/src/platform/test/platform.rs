@@ -46,6 +46,7 @@ pub(crate) struct TestPlatform {
     screen_capture_sources: RefCell<Vec<TestScreenCaptureSource>>,
     pub opened_url: RefCell<Option<String>>,
     pub(crate) misspelled_words: RefCell<Vec<(String, Vec<String>)>>,
+    pub(crate) low_power_mode: Cell<bool>,
     pub(crate) system_notifications: RefCell<TestSystemNotifications>,
     pub text_system: Arc<dyn PlatformTextSystem>,
     pub expect_restart:
@@ -226,6 +227,7 @@ impl TestPlatform {
             weak: weak.clone(),
             opened_url: Default::default(),
             misspelled_words: Default::default(),
+            low_power_mode: Cell::new(false),
             system_notifications: Default::default(),
             text_system,
             headless_renderer_factory,
@@ -587,6 +589,10 @@ impl Platform for TestPlatform {
 
     fn open_url(&self, url: &str) {
         *self.opened_url.borrow_mut() = Some(url.to_string())
+    }
+
+    fn is_low_power_mode(&self) -> bool {
+        self.low_power_mode.get()
     }
 
     fn has_spell_checker(&self) -> bool {

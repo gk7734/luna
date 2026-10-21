@@ -4,7 +4,8 @@ use gpui::{ForegroundExecutor, Task, ThermalState};
 use objc2::{rc::Retained, runtime::ProtocolObject};
 use objc2_foundation::{
     NSNotification, NSNotificationCenter, NSObjectProtocol, NSProcessInfo,
-    NSProcessInfoThermalState, NSProcessInfoThermalStateDidChangeNotification,
+    NSProcessInfoPowerStateDidChangeNotification, NSProcessInfoThermalState,
+    NSProcessInfoThermalStateDidChangeNotification,
 };
 
 pub fn thermal_state() -> ThermalState {
@@ -16,9 +17,15 @@ pub fn thermal_state() -> ThermalState {
     }
 }
 
+pub fn is_low_power_mode() -> bool {
+    NSProcessInfo::processInfo().isLowPowerModeEnabled()
+}
+
+/// Observes both the thermal state and Low Power Mode, which together say how much energy the
+/// system wants apps to spend.
 pub struct ThermalObserver {
     center: Retained<NSNotificationCenter>,
-    observer: Retained<ProtocolObject<dyn NSObjectProtocol>>,
+    observers: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
     _task: Task<()>,
 }
 
@@ -40,14 +47,20 @@ impl ThermalObserver {
                 log::debug!("thermal observer stopped before notification delivery");
             }
         });
-        let observer = unsafe {
+        let observers = [
+            unsafe { NSProcessInfoThermalStateDidChangeNotification },
+            unsafe { NSProcessInfoPowerStateDidChangeNotification },
+        ]
+        .into_iter()
+        .map(|notification| unsafe {
             center.addObserverForName_object_queue_usingBlock(
-                Some(NSProcessInfoThermalStateDidChangeNotification),
+                Some(notification),
                 Some(&NSProcessInfo::processInfo()),
                 None,
                 &block,
             )
-        };
+        })
+        .collect();
         let task = executor.spawn(async move {
             while receiver.next().await.is_some() {
                 callback();
@@ -55,7 +68,7 @@ impl ThermalObserver {
         });
         Self {
             center,
-            observer,
+            observers,
             _task: task,
         }
     }
@@ -63,8 +76,10 @@ impl ThermalObserver {
 
 impl Drop for ThermalObserver {
     fn drop(&mut self) {
-        unsafe {
-            self.center.removeObserver(self.observer.as_ref());
+        for observer in &self.observers {
+            unsafe {
+                self.center.removeObserver(observer.as_ref());
+            }
         }
     }
 }

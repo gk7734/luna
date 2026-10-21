@@ -1172,6 +1172,10 @@ impl Platform for MacPlatform {
         thermal::thermal_state()
     }
 
+    fn is_low_power_mode(&self) -> bool {
+        thermal::is_low_power_mode()
+    }
+
     fn prevent_idle_sleep(&self, reason: &str) -> Task<Result<ActivityGuard>> {
         Task::ready(Ok(AppleActivity::begin(
             reason,

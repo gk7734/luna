@@ -524,6 +524,11 @@ pub trait Platform: 'static {
     fn on_validate_app_menu_command(&self, callback: Box<dyn FnMut(&dyn Action) -> bool>);
 
     fn thermal_state(&self) -> ThermalState;
+    /// Whether the user asked the system to save energy (Low Power Mode on macOS). Changes are
+    /// reported through `on_thermal_state_change`.
+    fn is_low_power_mode(&self) -> bool {
+        false
+    }
     fn on_thermal_state_change(&self, callback: Box<dyn FnMut()>);
     fn prevent_idle_sleep(&self, reason: &str) -> Task<Result<ActivityGuard>>;
 

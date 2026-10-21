@@ -1652,6 +1652,12 @@ impl App {
         self.platform.thermal_state()
     }
 
+    /// Whether the user asked the system to save energy, e.g. with Low Power Mode on macOS.
+    /// `on_thermal_state_change` handlers also run when this changes.
+    pub fn is_low_power_mode(&self) -> bool {
+        self.platform.is_low_power_mode()
+    }
+
     /// Prevents idle sleep while the returned guard is held.
     pub fn prevent_idle_sleep(&self, reason: &str) -> Task<Result<ActivityGuard>> {
         self.platform.prevent_idle_sleep(reason)

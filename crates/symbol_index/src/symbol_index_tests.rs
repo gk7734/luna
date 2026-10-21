@@ -238,3 +238,29 @@ async fn test_unchanged_files_reuse_cached_results(cx: &mut TestAppContext) {
         vec!["edited_symbol"]
     );
 }
+
+#[gpui::test]
+async fn test_low_power_mode_defers_indexing(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/root"), json!({ "src": {} })).await;
+    let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+    project.read_with(cx, |project, _| project.languages().add(rust_lang()));
+    cx.run_until_parked();
+
+    cx.set_low_power_mode(true);
+    fs.insert_file(path!("/root/src/lib.rs"), b"fn deferred_symbol() {}".to_vec())
+        .await;
+    cx.run_until_parked();
+    cx.executor().advance_clock(ENERGY_SAVING_RECHECK_INTERVAL);
+    cx.run_until_parked();
+    assert!(candidate_names(&project, "deferred", cx).await.is_empty());
+
+    cx.set_low_power_mode(false);
+    cx.executor().advance_clock(ENERGY_SAVING_RECHECK_INTERVAL);
+    cx.run_until_parked();
+    assert_eq!(
+        candidate_names(&project, "deferred", cx).await,
+        vec!["deferred_symbol"]
+    );
+}
