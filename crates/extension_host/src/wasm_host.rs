@@ -33,7 +33,7 @@ use settings::Settings;
 use std::{
     borrow::Cow,
     path::{Path, PathBuf},
-    sync::{Arc, LazyLock, OnceLock},
+    sync::{Arc, Condvar, LazyLock, Mutex, OnceLock},
     time::Duration,
 };
 use task::{DebugScenario, SpawnInTerminal, TaskTemplate, ZedDebugConfig};
@@ -554,7 +554,32 @@ type ExtensionCall = Box<
     dyn Send + for<'a> FnOnce(&'a mut Extension, &'a mut Store<WasmState>) -> BoxFuture<'a, ()>,
 >;
 
-fn wasm_engine(executor: &BackgroundExecutor) -> wasmtime::Engine {
+/// Number of extension calls currently able to run wasm. The engine is global and never
+/// dropped, so an unconditional epoch timer would wake every 100ms forever once any extension
+/// loaded; the epoch thread instead sleeps while this is zero.
+static ACTIVE_WASM_CALLS: Mutex<usize> = Mutex::new(0);
+static WASM_CALLS_STARTED: Condvar = Condvar::new();
+
+struct EpochTickGuard;
+
+impl EpochTickGuard {
+    fn new() -> Self {
+        let mut active = ACTIVE_WASM_CALLS.lock().unwrap_or_else(|e| e.into_inner());
+        *active += 1;
+        if *active == 1 {
+            WASM_CALLS_STARTED.notify_one();
+        }
+        Self
+    }
+}
+
+impl Drop for EpochTickGuard {
+    fn drop(&mut self) {
+        *ACTIVE_WASM_CALLS.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
+    }
+}
+
+fn wasm_engine(_executor: &BackgroundExecutor) -> wasmtime::Engine {
     static WASM_ENGINE: OnceLock<wasmtime::Engine> = OnceLock::new();
     WASM_ENGINE
         .get_or_init(|| {
@@ -573,21 +598,26 @@ fn wasm_engine(executor: &BackgroundExecutor) -> wasmtime::Engine {
 
             let engine = wasmtime::Engine::new(&config).unwrap();
 
-            // It might be safer to do this on a non-async thread to make sure it makes progress
-            // regardless of if extensions are blocking.
-            // However, due to our current setup, this isn't a likely occurrence and we'd rather
-            // not have a dedicated thread just for this. If it becomes an issue, we can consider
-            // creating a separate thread for epoch interruption.
+            // A dedicated thread rather than an executor task: extension calls run on tokio, and
+            // waking an executor task from there would make it depend on another runtime's threads.
             let engine_ref = engine.weak();
-            let executor2 = executor.clone();
-            executor
-                .spawn(async move {
+            std::thread::Builder::new()
+                .name("WasmEpochTicker".to_string())
+                .spawn(move || {
                     // Somewhat arbitrary interval, as it isn't a guaranteed interval.
                     // But this is a rough upper bound for how long the extension execution can block on
                     // `Future::poll`.
                     const EPOCH_INTERVAL: Duration = Duration::from_millis(100);
                     loop {
-                        executor2.timer(EPOCH_INTERVAL).await;
+                        drop(
+                            WASM_CALLS_STARTED
+                                .wait_while(
+                                    ACTIVE_WASM_CALLS.lock().unwrap_or_else(|e| e.into_inner()),
+                                    |active| *active == 0,
+                                )
+                                .unwrap_or_else(|e| e.into_inner()),
+                        );
+                        std::thread::sleep(EPOCH_INTERVAL);
                         // Exit the loop and thread once the engine is dropped.
                         let Some(engine) = engine_ref.upgrade() else {
                             break;
@@ -595,7 +625,7 @@ fn wasm_engine(executor: &BackgroundExecutor) -> wasmtime::Engine {
                         engine.increment_epoch();
                     }
                 })
-                .detach();
+                .expect("failed to spawn wasm epoch thread");
 
             engine
         })
@@ -686,6 +716,7 @@ impl WasmHost {
             store.set_epoch_deadline(1);
             store.epoch_deadline_async_yield_and_update(1);
 
+            let epoch_tick_guard = EpochTickGuard::new();
             let mut extension = Extension::instantiate_async(
                 &executor,
                 &mut store,
@@ -700,10 +731,12 @@ impl WasmHost {
                 .await
                 .map_err(anyhow::Error::from)
                 .context("failed to initialize wasm extension")?;
+            drop(epoch_tick_guard);
 
             let (tx, mut rx) = mpsc::unbounded::<ExtensionCall>();
             let extension_task = async move {
                 while let Some(call) = rx.next().await {
+                    let _epoch_tick_guard = EpochTickGuard::new();
                     (call)(&mut extension, &mut store).await;
                 }
             };
