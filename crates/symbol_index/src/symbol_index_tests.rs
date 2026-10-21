@@ -249,8 +249,11 @@ async fn test_low_power_mode_defers_indexing(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     cx.set_low_power_mode(true);
-    fs.insert_file(path!("/root/src/lib.rs"), b"fn deferred_symbol() {}".to_vec())
-        .await;
+    fs.insert_file(
+        path!("/root/src/lib.rs"),
+        b"fn deferred_symbol() {}".to_vec(),
+    )
+    .await;
     cx.run_until_parked();
     cx.executor().advance_clock(ENERGY_SAVING_RECHECK_INTERVAL);
     cx.run_until_parked();
