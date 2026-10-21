@@ -609,6 +609,9 @@ impl LspAdapter for RustLspAdapter {
             // the server's memory (10 GB peak instead of 4 GB on Zed's own repository); without
             // it, crates are analyzed as files using them are opened.
             "cachePriming": { "enable": false },
+            // Checking on save runs `cargo check` on the saved file's package instead of the whole
+            // workspace, which on large workspaces keeps rustc busy for minutes and gigabytes.
+            "check": { "workspace": false },
             "lens": {
                 // The gutter already has run buttons for tests and binaries.
                 "run": { "enable": false },
