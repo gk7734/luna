@@ -492,10 +492,48 @@ impl CompletionBuilder {
     }
 }
 
+#[gpui::test]
+async fn test_sort_previously_accepted_first(cx: &mut TestAppContext) {
+    let completions = vec![
+        CompletionBuilder::function("floorf128", None, "80000000"),
+        CompletionBuilder::constant("foo_bar_baz", None, "80000000"),
+        CompletionBuilder::variable("foo_bar_qux", None, "80000000"),
+    ];
+    let usage_scores = symbol_index::UsageScores::new(
+        [
+            (Arc::from("floorf128"), 500),
+            (Arc::from("foo_bar_baz"), 10),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    let matches = fuzzy_matches("foo", &completions, cx).await;
+    let sorted = CompletionsMenu::sort_string_matches_with_usage(
+        matches,
+        Some("foo"),
+        SnippetSortOrder::default(),
+        &completions,
+        &usage_scores,
+    );
+    assert_eq!(
+        sorted.iter().map(|m| m.string.as_str()).collect::<Vec<_>>(),
+        vec!["floorf128", "foo_bar_baz", "foo_bar_qux"]
+    );
+}
+
 async fn filter_and_sort_matches(
     query: &str,
     completions: &Vec<Completion>,
     snippet_sort_order: SnippetSortOrder,
+    cx: &mut TestAppContext,
+) -> Vec<StringMatch> {
+    let matches = fuzzy_matches(query, completions, cx).await;
+    CompletionsMenu::sort_string_matches(matches, Some(query), snippet_sort_order, completions)
+}
+
+async fn fuzzy_matches(
+    query: &str,
+    completions: &[Completion],
     cx: &mut TestAppContext,
 ) -> Vec<StringMatch> {
     let candidates: Arc<[StringMatchCandidate]> = completions
@@ -505,7 +543,7 @@ async fn filter_and_sort_matches(
         .collect();
     let cancel_flag = Arc::new(AtomicBool::new(false));
     let background_executor = cx.executor();
-    let matches = fuzzy::match_strings(
+    fuzzy::match_strings(
         &candidates,
         query,
         query.chars().any(|c| c.is_uppercase()),
@@ -514,6 +552,5 @@ async fn filter_and_sort_matches(
         &cancel_flag,
         background_executor,
     )
-    .await;
-    CompletionsMenu::sort_string_matches(matches, Some(query), snippet_sort_order, completions)
+    .await
 }

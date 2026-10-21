@@ -153,6 +153,7 @@ image = { workspace = true, optional = true }
 itertools.workspace = true
 rayon.workspace = true
 semver.workspace = true
+symbol_index.workspace = true
 system_specs.workspace = true
 tabular_data_preview.workspace = true
 tempfile = { workspace = true, optional = true }

@@ -1449,17 +1449,22 @@ impl CompletionsMenu {
         let completions = self.completions.clone();
         let sort_completions = self.sort_completions;
         let snippet_sort_order = self.snippet_sort_order;
+        let usage_scores = symbol_index::usage_scores(
+            self.language.as_ref().map(|language| language.as_ref()),
+            cx,
+        );
         cx.foreground_executor().spawn(async move {
             let mut results = matches_task.await;
 
             let completions_ref = completions.borrow();
 
             if sort_completions {
-                results.filter_matches = Self::sort_string_matches(
+                results.filter_matches = Self::sort_string_matches_with_usage(
                     results.filter_matches,
                     Some(&query), // used for non-snippets only
                     snippet_sort_order,
                     &completions_ref,
+                    &usage_scores,
                 );
             }
 
@@ -1519,12 +1524,31 @@ impl CompletionsMenu {
         snippet_sort_order: SnippetSortOrder,
         completions: &[Completion],
     ) -> Vec<StringMatch> {
+        Self::sort_string_matches_with_usage(
+            matches,
+            query,
+            snippet_sort_order,
+            completions,
+            &symbol_index::UsageScores::default(),
+        )
+    }
+
+    /// Like `sort_string_matches`, but among word-start matches, completions the user accepted
+    /// before (recently or often) rank above better fuzzy scores, as in JetBrains IDEs.
+    pub fn sort_string_matches_with_usage(
+        matches: Vec<StringMatch>,
+        query: Option<&str>,
+        snippet_sort_order: SnippetSortOrder,
+        completions: &[Completion],
+        usage_scores: &symbol_index::UsageScores,
+    ) -> Vec<StringMatch> {
         let mut matches = matches;
 
         #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
         enum MatchTier<'a> {
             WordStartMatch {
                 sort_exact: Reverse<i32>,
+                sort_usage: Reverse<u32>,
                 sort_snippet: Reverse<i32>,
                 sort_score: Reverse<OrderedFloat<f64>>,
                 sort_positions: Vec<usize>,
@@ -1595,8 +1619,11 @@ impl CompletionsMenu {
                     0
                 });
 
+                let sort_usage = Reverse(usage_scores.score(completion.filter_text()));
+
                 MatchTier::WordStartMatch {
                     sort_exact,
+                    sort_usage,
                     sort_snippet,
                     sort_score,
                     sort_positions,

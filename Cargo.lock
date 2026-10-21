@@ -5609,6 +5609,7 @@ dependencies = [
  "smallvec",
  "snippet",
  "sum_tree",
+ "symbol_index",
  "task",
  "telemetry",
  "text",
@@ -17691,6 +17692,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "symbol_index"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "collections",
+ "db",
+ "fs",
+ "futures 0.3.34",
+ "fuzzy",
+ "gpui",
+ "language",
+ "log",
+ "parking_lot",
+ "project",
+ "release_channel",
+ "semver",
+ "serde_json",
+ "settings",
+ "tree-sitter",
+ "util",
+]
+
+[[package]]
 name = "symphonia"
 version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -22714,6 +22738,7 @@ dependencies = [
  "snippet_provider",
  "snippets_ui",
  "svg_preview",
+ "symbol_index",
  "sysinfo 0.39.6",
  "system_specs",
  "tab_switcher",

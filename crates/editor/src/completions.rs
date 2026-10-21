@@ -574,6 +574,16 @@ impl Editor {
             Task::ready(BTreeMap::default())
         };
 
+        // Indexed symbols from the whole project complement the current buffer's words.
+        let mut project_symbols = if load_word_completions
+            && let Some(project) = self.project()
+            && let Some(query) = query.as_ref()
+        {
+            symbol_index::candidates(project, query, PROJECT_SYMBOL_COMPLETION_LIMIT, cx)
+        } else {
+            Task::ready((Vec::new(), false))
+        };
+
         let snippet_char_classifier = buffer_snapshot
             .char_classifier_at(buffer_position)
             .scope_context(Some(CharScopeContext::Completion));
@@ -657,6 +667,7 @@ impl Editor {
                 }
                 if completion_settings.words == WordsCompletionMode::Fallback {
                     words = Task::ready(BTreeMap::default());
+                    project_symbols = Task::ready((Vec::new(), false));
                 }
             }
             let display_options = display_options.unwrap_or_default();
@@ -684,6 +695,41 @@ impl Editor {
                 insert_text_mode: Some(InsertTextMode::AS_IS),
                 confirm: None,
                 group: None,
+            }));
+
+            let (project_symbols, project_symbols_truncated) = project_symbols.await;
+            is_incomplete |= project_symbols_truncated;
+            let mut seen_texts = completions
+                .iter()
+                .map(|completion| completion.new_text.clone())
+                .collect::<HashSet<_>>();
+            seen_texts.extend(word_to_exclude.clone());
+            completions.extend(project_symbols.into_iter().filter_map(|symbol| {
+                let name = symbol.name.to_string();
+                if !seen_texts.insert(name.clone()) {
+                    return None;
+                }
+                Some(Completion {
+                    replace_range: word_replace_range.clone(),
+                    new_text: name.clone(),
+                    label: CodeLabel::plain(name, None),
+                    match_start: None,
+                    snippet_deduplication_key: None,
+                    icon_path: None,
+                    icon_color: None,
+                    documentation: Some(CompletionDocumentation::SingleLine(
+                        format!(
+                            "{} in {}",
+                            symbol.kind.label(),
+                            symbol.path.display(util::paths::PathStyle::local())
+                        )
+                        .into(),
+                    )),
+                    source: CompletionSource::Custom,
+                    insert_text_mode: Some(InsertTextMode::AS_IS),
+                    confirm: None,
+                    group: None,
+                })
             }));
 
             completions.extend(
@@ -877,6 +923,15 @@ impl Editor {
         cx.stop_propagation();
 
         let buffer_handle = completions_menu.buffer.clone();
+        let language_name = buffer_handle
+            .read(cx)
+            .language()
+            .map(|language| language.name());
+        symbol_index::record_acceptance(
+            language_name.as_ref().map(|name| name.as_ref()),
+            completion.filter_text(),
+            cx,
+        );
         let multibuffer_snapshot = self.buffer.read(cx).snapshot(cx);
         let (initial_position, _) =
             multibuffer_snapshot.anchor_to_buffer_anchor(completions_menu.initial_position)?;
@@ -1139,6 +1194,10 @@ impl Editor {
         self.word_completions_enabled = false;
     }
 }
+
+/// The menu is re-queried as the user types when this cap is hit, so it only needs to cover what
+/// fits on screen with room for re-sorting.
+const PROJECT_SYMBOL_COMPLETION_LIMIT: usize = 50;
 
 pub trait CompletionProvider {
     fn completions(
