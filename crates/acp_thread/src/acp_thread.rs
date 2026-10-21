@@ -5872,8 +5872,10 @@ impl AcpThread {
         content: &acp_v2::ToolCallContent,
         cx: &mut Context<Self>,
     ) {
-        if let acp_v2::ToolCallContent::Terminal(terminal) = content {
-            self.ensure_display_terminal(terminal.terminal_id.clone(), cx);
+        if let acp_v2::ToolCallContent::Terminal(terminal) = content
+            && let Err(error) = self.ensure_display_terminal(terminal.terminal_id.clone(), cx)
+        {
+            log::error!("failed to create display terminal for tool call: {error:#}");
         }
     }
 
@@ -7858,7 +7860,7 @@ impl AcpThread {
         patch: DisplayTerminalPatch,
         cx: &mut Context<Self>,
     ) -> Result<()> {
-        let terminal = self.ensure_display_terminal(terminal_id, cx);
+        let terminal = self.ensure_display_terminal(terminal_id, cx)?;
         terminal.update(cx, |terminal, cx| terminal.apply_display_patch(patch, cx))
     }
 
@@ -7868,7 +7870,7 @@ impl AcpThread {
         data: &[u8],
         cx: &mut Context<Self>,
     ) -> Result<()> {
-        let terminal = self.ensure_display_terminal(terminal_id, cx);
+        let terminal = self.ensure_display_terminal(terminal_id, cx)?;
         terminal.update(cx, |terminal, cx| terminal.append_display_bytes(data, cx))
     }
 
@@ -7876,9 +7878,9 @@ impl AcpThread {
         &mut self,
         terminal_id: acp_v2::TerminalId,
         cx: &mut Context<Self>,
-    ) -> Entity<Terminal> {
+    ) -> Result<Entity<Terminal>> {
         if let Some(terminal) = self.terminals.get(&terminal_id) {
-            return terminal.clone();
+            return Ok(terminal.clone());
         }
         let builder = ::terminal::TerminalBuilder::new_display_only(
             ::terminal::terminal_settings::CursorShape::default(),
@@ -7887,9 +7889,9 @@ impl AcpThread {
             0,
             cx.background_executor(),
             self.project.read(cx).path_style(cx),
-        );
+        )?;
         let terminal = cx.new(|cx| builder.subscribe(cx));
-        self.register_display_terminal(terminal_id, None, None, None, terminal, cx)
+        Ok(self.register_display_terminal(terminal_id, None, None, None, terminal, cx))
     }
 
     fn register_display_terminal(
@@ -10035,7 +10037,8 @@ mod tests {
                 0,
                 cx.background_executor(),
                 PathStyle::local(),
-            );
+            )
+            .expect("failed to create display-only terminal");
             builder.subscribe(cx)
         });
 
@@ -10093,7 +10096,8 @@ mod tests {
                 0,
                 cx.background_executor(),
                 PathStyle::local(),
-            );
+            )
+            .expect("failed to create display-only terminal");
             builder.subscribe(cx)
         });
 
@@ -10464,6 +10468,7 @@ mod tests {
                     cx.background_executor(),
                     PathStyle::local(),
                 )
+                .expect("failed to create display-only terminal")
                 .subscribe(cx)
             });
             for (label, cwd, output_limit) in [
@@ -10728,6 +10733,7 @@ mod tests {
                 cx.background_executor(),
                 PathStyle::local(),
             )
+            .expect("failed to create display-only terminal")
             .subscribe(cx)
         });
         let terminal = thread.update(cx, |thread, cx| {
@@ -10851,7 +10857,8 @@ mod tests {
                 0,
                 cx.background_executor(),
                 PathStyle::local(),
-            );
+            )
+            .expect("failed to create display-only terminal");
             builder.subscribe(cx)
         });
 
@@ -17655,6 +17662,7 @@ mod tests {
                 cx.background_executor(),
                 PathStyle::local(),
             )
+            .expect("failed to create display-only terminal")
             .subscribe(cx)
         });
         thread.update(cx, |thread, cx| {
@@ -20807,7 +20815,8 @@ mod tests {
                 0,
                 cx.background_executor(),
                 PathStyle::local(),
-            );
+            )
+            .expect("failed to create display-only terminal");
             builder.subscribe(cx)
         });
 
@@ -20853,7 +20862,8 @@ mod tests {
                 0,
                 cx.background_executor(),
                 PathStyle::local(),
-            );
+            )
+            .expect("failed to create display-only terminal");
             builder.subscribe(cx)
         });
 
@@ -20913,7 +20923,8 @@ mod tests {
                 0,
                 cx.background_executor(),
                 PathStyle::local(),
-            );
+            )
+            .expect("failed to create display-only terminal");
             builder.subscribe(cx)
         });
 

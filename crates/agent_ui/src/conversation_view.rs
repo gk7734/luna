@@ -15254,6 +15254,7 @@ pub(crate) mod tests {
                     cx.background_executor(),
                     util::paths::PathStyle::local(),
                 )
+                .expect("failed to create display-only terminal")
                 .subscribe(cx)
             });
             let display_terminal = terminal.clone();
@@ -15390,6 +15391,7 @@ pub(crate) mod tests {
                 cx.background_executor(),
                 util::paths::PathStyle::local(),
             )
+            .expect("failed to create display-only terminal")
             .subscribe(cx)
         });
         assert!(!lower_terminal.read_with(cx, |terminal, _| terminal.is_pty()));

@@ -2519,6 +2519,7 @@ mod tests {
                             cx.background_executor(),
                             util::paths::PathStyle::local(),
                         )
+                        .expect("failed to create display-only terminal")
                         .subscribe(cx)
                     });
                     gpui::Task::ready(Ok(terminal))

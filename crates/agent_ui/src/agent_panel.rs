@@ -6914,7 +6914,8 @@ impl AgentPanel {
             cx.entity_id().as_u64(),
             cx.background_executor(),
             path_style,
-        );
+        )
+        .expect("failed to create display-only terminal");
         cx.new(|cx| builder.subscribe(cx))
     }
 
@@ -10002,6 +10003,7 @@ mod tests {
                         cx.background_executor(),
                         path_style,
                     )
+                    .expect("failed to create display-only terminal")
                     .subscribe(cx)
                 });
                 let terminal_view = cx.new(|cx| {
