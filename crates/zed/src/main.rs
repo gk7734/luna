@@ -716,6 +716,7 @@ fn main() {
         project_panel::init(cx);
         outline_panel::init(cx);
         todo_panel::init(cx);
+        ai_usage::init(cx);
         tasks_ui::init(cx);
         snippets_ui::init(cx);
         search::init(cx);

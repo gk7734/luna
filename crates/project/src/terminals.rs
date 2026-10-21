@@ -1,6 +1,6 @@
 use anyhow::{Context as _, Result};
 use collections::HashMap;
-use gpui::{App, AppContext as _, Context, Entity, Task, WeakEntity};
+use gpui::{App, AppContext as _, Context, Entity, Global, Task, WeakEntity};
 
 use futures::{FutureExt, future::Shared};
 use itertools::Itertools as _;
@@ -24,6 +24,24 @@ use util::{
 };
 
 use crate::{Project, ProjectPath};
+
+/// Environment variables added to every terminal, set by features outside the project, such as
+/// the AI account switcher selecting which account CLIs use.
+#[derive(Default)]
+pub struct ExtraTerminalEnv(pub HashMap<String, String>);
+
+impl Global for ExtraTerminalEnv {}
+
+fn terminal_settings_with_extra_env(
+    settings_location: Option<SettingsLocation>,
+    cx: &App,
+) -> TerminalSettings {
+    let mut settings = TerminalSettings::get(settings_location, cx).clone();
+    if let Some(extra_env) = cx.try_global::<ExtraTerminalEnv>() {
+        settings.env.extend(extra_env.0.clone());
+    }
+    settings
+}
 
 pub struct Terminals {
     pub(crate) local_handles: Vec<WeakEntity<terminal::Terminal>>,
@@ -90,7 +108,7 @@ impl Project {
                 path: RelPath::empty(),
             });
         }
-        let settings = TerminalSettings::get(settings_location, cx).clone();
+        let settings = terminal_settings_with_extra_env(settings_location, cx);
         let detect_venv = settings.detect_venv.as_option().is_some();
 
         let terminal_mode = TerminalMode::task(spawn_task.clone());
@@ -328,7 +346,7 @@ impl Project {
                 path: RelPath::empty(),
             });
         }
-        let settings = TerminalSettings::get(settings_location, cx).clone();
+        let settings = terminal_settings_with_extra_env(settings_location, cx);
         let detect_venv = settings.detect_venv.as_option().is_some();
         let local_path = if is_via_remote { None } else { path.clone() };
 
@@ -557,7 +575,10 @@ impl Project {
     ) -> Task<Result<smol::process::Command>> {
         let path = self.first_project_directory(cx);
         let remote_client = self.remote_client.clone();
-        let settings = self.terminal_settings(&path, cx).clone();
+        let mut settings = self.terminal_settings(&path, cx).clone();
+        if let Some(extra_env) = cx.try_global::<ExtraTerminalEnv>() {
+            settings.env.extend(extra_env.0.clone());
+        }
         let shell = remote_client
             .as_ref()
             .and_then(|remote_client| remote_client.read(cx).shell())

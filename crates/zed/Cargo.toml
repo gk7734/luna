@@ -102,6 +102,7 @@ agent_servers = { workspace = true, optional = true }
 agent_settings.workspace = true
 agent_skills.workspace = true
 agent_ui = { workspace = true, optional = true, features = ["audio"] }
+ai_usage.workspace = true
 anyhow.workspace = true
 askpass.workspace = true
 assets.workspace = true

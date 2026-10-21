@@ -658,6 +658,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         let git_blame_status = cx.new(|_| git_ui::GitBlameStatus::default());
         let merge_conflict_indicator =
             cx.new(|cx| git_ui::MergeConflictIndicator::new(workspace, cx));
+        let ai_usage_indicator = cx.new(ai_usage::UsageIndicator::new);
         workspace.status_bar().update(cx, |status_bar, cx| {
             status_bar.add_left_item(search_button, window, cx);
             status_bar.add_left_item(lsp_button, window, cx);
@@ -666,6 +667,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             status_bar.add_left_item(git_blame_status, window, cx);
             status_bar.add_left_item(merge_conflict_indicator, window, cx);
             status_bar.add_left_item(activity_indicator, window, cx);
+            status_bar.add_left_item(ai_usage_indicator, window, cx);
             #[cfg(feature = "ai")]
             status_bar.add_right_item(edit_prediction_ui, window, cx);
             status_bar.add_right_item(active_buffer_encoding, window, cx);
@@ -6011,6 +6013,7 @@ mod tests {
                 "app_menu",
                 "assistant",
                 "assistant2",
+                "ai_usage",
                 "auto_update",
                 "branch_picker",
                 "bedrock",

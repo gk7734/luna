@@ -610,6 +610,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "ai_usage"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "collections",
+ "db",
+ "futures 0.3.34",
+ "gpui",
+ "http_client",
+ "log",
+ "paths",
+ "project",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "sha2",
+ "ui",
+ "util",
+ "workspace",
+]
+
+[[package]]
 name = "alacritty_terminal"
 version = "0.26.1-dev"
 source = "git+https://github.com/zed-industries/alacritty?rev=4c129667ce56611becdc82de6e28218c80e2e88f#4c129667ce56611becdc82de6e28218c80e2e88f"
@@ -22634,6 +22657,7 @@ dependencies = [
  "agent_settings",
  "agent_skills",
  "agent_ui",
+ "ai_usage",
  "anyhow",
  "ashpd",
  "askpass",
