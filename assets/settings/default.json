@@ -2387,6 +2387,20 @@
     //
     // Default: 3
     "words_min_length": 3,
+    // Controls how symbols indexed from the whole project are completed.
+    // They share the `words_min_length` threshold.
+    //
+    // May take 3 values:
+    // 1. "enabled"
+    //   Show project symbols along with LSP completions,
+    //   except right after a completion trigger character such as `.`.
+    // 2. "fallback"
+    //   Only if LSP returns no completions, errors or times out, show project symbols.
+    // 3. "disabled"
+    //   Never show project symbols in completions.
+    //
+    // Default: enabled
+    "project_symbols": "enabled",
     // Whether to fetch LSP completions or not.
     //
     // Default: true

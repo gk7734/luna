@@ -10169,7 +10169,7 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
         ]
     }
 
-    fn completions_section() -> [SettingsPageItem; 8] {
+    fn completions_section() -> [SettingsPageItem; 9] {
         [
             SettingsPageItem::SectionHeader("Completions"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -10249,6 +10249,26 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
                                 .completions
                                 .get_or_insert_default()
                                 .words_min_length = value;
+                        })
+                    },
+                }),
+                metadata: None,
+                files: USER | PROJECT,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Project Symbols",
+                description: "Controls how symbols indexed from the whole project are completed.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("languages.$(language).completions.project_symbols"),
+                    pick: |settings_content| {
+                        language_settings_field(settings_content, |language| {
+                            language.completions.as_ref()?.project_symbols.as_ref()
+                        })
+                    },
+                    write: |settings_content, value, _| {
+                        language_settings_field_mut(settings_content, value, |language, value| {
+                            language.completions.get_or_insert_default().project_symbols = value;
                         })
                     },
                 }),

@@ -23717,6 +23717,107 @@ async fn test_completion_without_text_edit_after_typing(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
+async fn test_project_symbol_completion_modes(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+    cx.update(symbol_index::init);
+    let mut cx = EditorLspTestContext::new_rust(
+        lsp::ServerCapabilities {
+            completion_provider: Some(lsp::CompletionOptions {
+                trigger_characters: Some(vec![".".to_string()]),
+                ..lsp::CompletionOptions::default()
+            }),
+            ..lsp::ServerCapabilities::default()
+        },
+        cx,
+    )
+    .await;
+    let fs = cx.update_editor(|editor, _, cx| {
+        editor
+            .project()
+            .expect("editor should have a project")
+            .read(cx)
+            .fs()
+            .clone()
+    });
+    fs.as_fake()
+        .insert_file(
+            path!("/root/dir/geometry.rs"),
+            b"fn distance_between() {}".to_vec(),
+        )
+        .await;
+    cx.run_until_parked();
+
+    let lsp_labels = Arc::new(Mutex::new(vec!["display"]));
+    cx.set_request_handler::<lsp::request::Completion, _, _>({
+        let lsp_labels = lsp_labels.clone();
+        move |_, _, _| {
+            let items = lsp_labels
+                .lock()
+                .iter()
+                .map(|label| lsp::CompletionItem {
+                    label: label.to_string(),
+                    ..lsp::CompletionItem::default()
+                })
+                .collect();
+            async move { Ok(Some(lsp::CompletionResponse::Array(items))) }
+        }
+    });
+
+    async fn shown_completions(state: &str, cx: &mut EditorLspTestContext) -> Vec<String> {
+        cx.set_state(state);
+        cx.update_editor(|editor, window, cx| {
+            editor.show_completions(&ShowCompletions, window, cx);
+        });
+        cx.run_until_parked();
+        cx.update_editor(|editor, window, cx| {
+            let entries = match editor.context_menu.borrow().as_ref() {
+                Some(CodeContextMenu::Completions(menu)) => completion_menu_entries(menu),
+                _ => Vec::new(),
+            };
+            editor.hide_context_menu(window, cx);
+            entries
+        })
+    }
+
+    fn set_project_symbols_mode(mode: ProjectSymbolsCompletionMode, cx: &mut EditorLspTestContext) {
+        update_test_language_settings(cx, &move |settings| {
+            settings.defaults.completions = Some(CompletionSettingsContent {
+                project_symbols: Some(mode),
+                ..CompletionSettingsContent::default()
+            });
+        });
+    }
+
+    set_project_symbols_mode(ProjectSymbolsCompletionMode::Enabled, &mut cx);
+    let mut completions = shown_completions("fn main() { disˇ }", &mut cx).await;
+    completions.sort();
+    assert_eq!(completions, ["display", "distance_between"]);
+    assert_eq!(
+        shown_completions("fn main() { point.disˇ }", &mut cx).await,
+        ["display"],
+        "project symbols are noise after a member access trigger"
+    );
+
+    set_project_symbols_mode(ProjectSymbolsCompletionMode::Fallback, &mut cx);
+    assert_eq!(
+        shown_completions("fn main() { disˇ }", &mut cx).await,
+        ["display"]
+    );
+    lsp_labels.lock().clear();
+    assert_eq!(
+        shown_completions("fn main() { disˇ }", &mut cx).await,
+        ["distance_between"]
+    );
+
+    set_project_symbols_mode(ProjectSymbolsCompletionMode::Disabled, &mut cx);
+    assert!(
+        shown_completions("fn main() { disˇ }", &mut cx)
+            .await
+            .is_empty()
+    );
+}
+
+#[gpui::test]
 async fn test_completion_with_explicit_replace_range(cx: &mut TestAppContext) {
     init_test(cx, |settings| {
         settings.defaults.completions = Some(CompletionSettingsContent {

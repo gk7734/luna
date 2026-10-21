@@ -190,8 +190,8 @@ use language::{
     LocalFile, OffsetRangeExt, OutlineItem, Point, Selection, SelectionGoal, TextObject,
     TransactionId, TreeSitterOptions, WordsQuery,
     language_settings::{
-        self, AllLanguageSettings, LanguageSettings, LspInsertMode, RewrapBehavior, SoftWrapIndent,
-        WordsCompletionMode, all_language_settings,
+        self, AllLanguageSettings, LanguageSettings, LspInsertMode, ProjectSymbolsCompletionMode,
+        RewrapBehavior, SoftWrapIndent, WordsCompletionMode, all_language_settings,
     },
     point_to_lsp, text_diff_with_options,
 };

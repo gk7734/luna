@@ -126,6 +126,7 @@ release_channel.workspace = true
 rand.workspace = true
 semver.workspace = true
 settings = { workspace = true, features = ["test-support"] }
+symbol_index = { workspace = true, features = ["test-support"] }
 
 text = { workspace = true, features = ["test-support"] }
 theme = { workspace = true, features = ["test-support"] }

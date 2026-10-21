@@ -457,6 +457,13 @@ impl CompletionBuilder {
         )
     }
 
+    fn custom(label: &str) -> Completion {
+        Completion {
+            source: CompletionSource::Custom,
+            ..Self::new(label, None, "", None)
+        }
+    }
+
     fn new(
         label: &str,
         filter_text: Option<&str>,
@@ -518,6 +525,25 @@ async fn test_sort_previously_accepted_first(cx: &mut TestAppContext) {
     assert_eq!(
         sorted.iter().map(|m| m.string.as_str()).collect::<Vec<_>>(),
         vec!["floorf128", "foo_bar_baz", "foo_bar_qux"]
+    );
+}
+
+#[gpui::test]
+async fn test_sort_lsp_before_equally_scored_custom(cx: &mut TestAppContext) {
+    let completions = vec![
+        CompletionBuilder::custom("distance"),
+        CompletionBuilder::function("distance", None, "80000000"),
+    ];
+    let matches =
+        filter_and_sort_matches("distance", &completions, SnippetSortOrder::default(), cx).await;
+    assert_eq!(matches[0].score, matches[1].score);
+    assert_eq!(
+        matches
+            .iter()
+            .map(|string_match| &completions[string_match.candidate_id].source)
+            .map(|source| matches!(source, CompletionSource::Custom))
+            .collect::<Vec<_>>(),
+        vec![false, true]
     );
 }
 

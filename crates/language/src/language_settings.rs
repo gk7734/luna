@@ -19,8 +19,9 @@ pub use settings::{
     AutoIndentMode, CompletionSettingsContent, ConfiguredLanguageServer,
     EditPredictionDataCollectionChoice, EditPredictionPromptFormatContent, EditPredictionProvider,
     EditPredictionsMode, FormatOnSave, Formatter, FormatterList, InlayHintKind,
-    LanguageSettingsContent, LineEndingSetting, LspInsertMode, REST_OF_LANGUAGE_SERVERS,
-    RewrapBehavior, ShowWhitespaceSetting, SoftWrap, SoftWrapIndent, WordsCompletionMode,
+    LanguageSettingsContent, LineEndingSetting, LspInsertMode, ProjectSymbolsCompletionMode,
+    REST_OF_LANGUAGE_SERVERS, RewrapBehavior, ShowWhitespaceSetting, SoftWrap, SoftWrapIndent,
+    WordsCompletionMode,
 };
 use settings::{RegisterSetting, Settings, SettingsLocation, SettingsStore, merge_from::MergeFrom};
 use shellexpand;
@@ -197,6 +198,10 @@ pub struct CompletionSettings {
     ///
     /// Default: 3
     pub words_min_length: usize,
+    /// Controls how symbols indexed from the whole project are completed.
+    ///
+    /// Default: `enabled`
+    pub project_symbols: ProjectSymbolsCompletionMode,
     /// Whether to fetch LSP completions or not.
     ///
     /// Default: true
@@ -915,6 +920,7 @@ impl settings::Settings for AllLanguageSettings {
                 completions: CompletionSettings {
                     words: completions.words.unwrap(),
                     words_min_length: completions.words_min_length.unwrap() as usize,
+                    project_symbols: completions.project_symbols.unwrap(),
                     lsp: completions.lsp.unwrap(),
                     lsp_fetch_timeout_ms: completions.lsp_fetch_timeout_ms.unwrap(),
                     lsp_insert_mode: completions.lsp_insert_mode.unwrap(),

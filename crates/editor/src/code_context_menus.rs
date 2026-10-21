@@ -1551,6 +1551,7 @@ impl CompletionsMenu {
                 sort_usage: Reverse<u32>,
                 sort_snippet: Reverse<i32>,
                 sort_score: Reverse<OrderedFloat<f64>>,
+                sort_custom_source: bool,
                 sort_positions: Vec<usize>,
                 sort_exact_case_matches: Reverse<usize>,
                 sort_text: Option<&'a str>,
@@ -1620,12 +1621,16 @@ impl CompletionsMenu {
                 });
 
                 let sort_usage = Reverse(usage_scores.score(completion.filter_text()));
+                // Custom completions (project symbols) lack an LSP `sort_text`, which would otherwise
+                // place them before equally scored LSP completions that know the context.
+                let sort_custom_source = matches!(completion.source, CompletionSource::Custom);
 
                 MatchTier::WordStartMatch {
                     sort_exact,
                     sort_usage,
                     sort_snippet,
                     sort_score,
+                    sort_custom_source,
                     sort_positions,
                     sort_exact_case_matches,
                     sort_text,

@@ -992,6 +992,11 @@ pub struct CompletionSettingsContent {
     ///
     /// Default: 3
     pub words_min_length: Option<u32>,
+    /// Controls how symbols indexed from the whole project are completed.
+    /// They share the `words_min_length` threshold.
+    ///
+    /// Default: `enabled`
+    pub project_symbols: Option<ProjectSymbolsCompletionMode>,
     /// Whether to fetch LSP completions or not.
     ///
     /// Default: true
@@ -1057,6 +1062,32 @@ pub enum WordsCompletionMode {
     Fallback,
     /// Never fetch or complete document's words for completions.
     /// (Word-based completions can still be queried via a separate action)
+    Disabled,
+}
+
+/// Controls how symbols indexed from the whole project are completed.
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectSymbolsCompletionMode {
+    /// Show project symbols along with LSP completions,
+    /// except right after a completion trigger character such as `.`.
+    Enabled,
+    /// Only if LSP returns no completions, errors or times out,
+    /// show project symbols.
+    Fallback,
+    /// Never show project symbols in completions.
     Disabled,
 }
 

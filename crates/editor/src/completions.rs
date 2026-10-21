@@ -540,23 +540,55 @@ impl Editor {
             Task::ready(Ok(Vec::new()))
         };
 
-        let load_word_completions = if !self.word_completions_enabled {
-            false
-        } else if requested_source
+        let words_requested = requested_source
             == Some(CompletionsMenuSource::Words {
                 ignore_threshold: true,
-            })
-        {
+            });
+        let query_reaches_words_min_length = ignore_word_threshold || {
+            let words_min_length = completion_settings.words_min_length;
+            // check whether word has at least `words_min_length` characters
+            let query_chars = query.iter().flat_map(|q| q.chars());
+            query_chars.take(words_min_length).count() == words_min_length
+        };
+        let load_word_completions = if !self.word_completions_enabled {
+            false
+        } else if words_requested {
             true
         } else {
             load_provider_completions
                 && completion_settings.words != WordsCompletionMode::Disabled
-                && (ignore_word_threshold || {
-                    let words_min_length = completion_settings.words_min_length;
-                    // check whether word has at least `words_min_length` characters
-                    let query_chars = query.iter().flat_map(|q| q.chars());
-                    query_chars.take(words_min_length).count() == words_min_length
-                })
+                && query_reaches_words_min_length
+        };
+        let load_project_symbols = if !self.word_completions_enabled {
+            false
+        } else if words_requested {
+            true
+        } else {
+            load_provider_completions
+                && completion_settings.project_symbols != ProjectSymbolsCompletionMode::Disabled
+                && query_reaches_words_min_length
+        };
+        // After a trigger such as `.` or `::`, LSP completions are scoped to a receiver or path,
+        // where unrelated project-wide names would only be noise.
+        let follows_trigger_character = {
+            let buffer = buffer.read(cx);
+            let char_classifier = buffer_snapshot
+                .char_classifier_at(buffer_position)
+                .scope_context(Some(CharScopeContext::Completion));
+            let word_start = word_replace_range.start.to_offset(&buffer_snapshot);
+            let preceding_text = buffer_snapshot
+                .reversed_chars_at(word_start)
+                .take(MAX_TRIGGER_CHARACTER_LENGTH)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>();
+            buffer.completion_triggers().iter().any(|trigger| {
+                !trigger
+                    .chars()
+                    .all(|character| char_classifier.is_word(character))
+                    && preceding_text.ends_with(trigger.as_str())
+            })
         };
 
         let mut words = if load_word_completions {
@@ -575,7 +607,7 @@ impl Editor {
         };
 
         // Indexed symbols from the whole project complement the current buffer's words.
-        let mut project_symbols = if load_word_completions
+        let mut project_symbols = if load_project_symbols
             && let Some(project) = self.project()
             && let Some(query) = query.as_ref()
         {
@@ -667,6 +699,15 @@ impl Editor {
                 }
                 if completion_settings.words == WordsCompletionMode::Fallback {
                     words = Task::ready(BTreeMap::default());
+                }
+            }
+            if !completions.is_empty() {
+                let drop_project_symbols = match completion_settings.project_symbols {
+                    ProjectSymbolsCompletionMode::Enabled => follows_trigger_character,
+                    ProjectSymbolsCompletionMode::Fallback => true,
+                    ProjectSymbolsCompletionMode::Disabled => false,
+                };
+                if drop_project_symbols {
                     project_symbols = Task::ready((Vec::new(), false));
                 }
             }
@@ -703,6 +744,11 @@ impl Editor {
                 .iter()
                 .map(|completion| completion.new_text.clone())
                 .collect::<HashSet<_>>();
+            seen_texts.extend(
+                completions
+                    .iter()
+                    .map(|completion| completion.label.filter_text().to_string()),
+            );
             seen_texts.extend(word_to_exclude.clone());
             completions.extend(project_symbols.into_iter().filter_map(|symbol| {
                 let name = symbol.name.to_string();
@@ -1198,6 +1244,7 @@ impl Editor {
 /// The menu is re-queried as the user types when this cap is hit, so it only needs to cover what
 /// fits on screen with room for re-sorting.
 const PROJECT_SYMBOL_COMPLETION_LIMIT: usize = 50;
+const MAX_TRIGGER_CHARACTER_LENGTH: usize = 3;
 
 pub trait CompletionProvider {
     fn completions(
