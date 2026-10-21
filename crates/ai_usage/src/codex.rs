@@ -5,7 +5,7 @@ use http_client::{AsyncBody, HttpClient, Request, StatusCode};
 use serde::Deserialize;
 use std::{path::Path, sync::Arc};
 
-use crate::{UsageReport, UsageWindow};
+use crate::{RateLimited, UsageReport, UsageWindow};
 
 /// The endpoint the Codex CLI reads its rate limits from. It isn't a public API, so it may change.
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
@@ -69,6 +69,7 @@ pub(crate) async fn fetch_usage(
         StatusCode::OK => {}
         // Refreshing the token here would rotate the one Codex stored and sign it out.
         StatusCode::UNAUTHORIZED => bail!("sign-in expired; run codex once to renew it"),
+        StatusCode::TOO_MANY_REQUESTS => return Err(RateLimited.into()),
         status => bail!("usage request failed with {status}"),
     }
     parse_usage(&body, Utc::now())

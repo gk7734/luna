@@ -5,7 +5,7 @@ use http_client::{AsyncBody, HttpClient, Request, StatusCode};
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::{UsageReport, UsageWindow};
+use crate::{RateLimited, UsageReport, UsageWindow};
 
 /// The endpoint Claude Code's `/usage` reads. It isn't a public API, so it may change.
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
@@ -67,6 +67,7 @@ pub(crate) async fn fetch_usage(
     match response.status() {
         StatusCode::OK => {}
         StatusCode::UNAUTHORIZED => bail!("sign-in expired; run claude once to renew it"),
+        StatusCode::TOO_MANY_REQUESTS => return Err(RateLimited.into()),
         status => bail!("usage request failed with {status}"),
     }
     let mut report = parse_usage(&body)?;

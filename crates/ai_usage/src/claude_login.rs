@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 const CLAUDE_CODE_SERVICE: &str = "Claude Code-credentials";
-const LUNA_SERVICE: &str = "Luna AI Accounts";
+/// Items under the earlier "Luna AI Accounts" name were made through Security.framework and only
+/// trust the Luna build that made them, so reading them prompts; they're left alone.
+const LUNA_SERVICE: &str = "Luna AI Sign-ins";
 /// `security`'s exit status when no item matches.
 const ITEM_NOT_FOUND: i32 = 44;
 

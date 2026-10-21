@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use gpui::{
     Action, Anchor, AnyElement, App, Context, Entity, IntoElement, ParentElement, Render, Styled,
-    Subscription, Window, px, relative,
+    Subscription, Task, Window, px, relative,
 };
 use task::{SpawnInTerminal, TaskId};
 use ui::{ButtonLike, ContextMenu, PopoverMenu, Tooltip, prelude::*};
@@ -12,7 +12,7 @@ use workspace::{
 };
 
 use crate::{
-    Account, AccountUsage, AddClaudeAccount, AddCodexAccount, AiUsage, Provider, Refresh,
+    Account, AccountUsage, AddClaudeAccount, AddCodexAccount, AiUsage, Provider, Refresh, SignIn,
     UsageWindow,
 };
 
@@ -48,10 +48,18 @@ pub(crate) fn register_workspace_actions(workspace: &mut Workspace) {
     workspace.register_action(|workspace, _: &AddCodexAccount, window, cx| {
         add_account(workspace, Provider::Codex, window, cx);
     });
+    workspace.register_action(|workspace, action: &SignIn, window, cx| {
+        let Some(ai_usage) = AiUsage::global(cx) else {
+            return;
+        };
+        let Some(account) = ai_usage.read(cx).account(&action.account_id) else {
+            return;
+        };
+        let sign_in = ai_usage.update(cx, |ai_usage, cx| ai_usage.sign_in_again(&account, cx));
+        sign_in_in_terminal(workspace, ai_usage, sign_in, window, cx);
+    });
 }
 
-/// The new account becomes active, so the terminal opened for it runs the CLI against the new
-/// account's own directory, where the CLI asks to sign in.
 fn add_account(
     workspace: &mut Workspace,
     provider: Provider,
@@ -62,29 +70,38 @@ fn add_account(
         return;
     };
     let add_account = ai_usage.update(cx, |ai_usage, cx| ai_usage.add_account(provider, cx));
+    sign_in_in_terminal(workspace, ai_usage, add_account, window, cx);
+}
+
+/// The account is active once `begin_sign_in` resolves, so the terminal runs the CLI signed out
+/// of every other account, and the CLI asks to sign in.
+fn sign_in_in_terminal(
+    workspace: &mut Workspace,
+    ai_usage: Entity<AiUsage>,
+    begin_sign_in: Task<anyhow::Result<Account>>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
     cx.spawn_in(window, async move |workspace, cx| {
-        let account = add_account.await?;
-        workspace.update_in(cx, |workspace, window, cx| {
-            let (command, args) = provider.sign_in_command();
+        let account = begin_sign_in.await?;
+        let terminal = workspace.update_in(cx, |workspace, window, cx| {
+            let (command, args) = account.provider.sign_in_command();
             let label = format!("Sign in to {}", account.name);
-            // The CLI starts signed out, so it goes straight to signing in, in the browser.
-            workspace
-                .spawn_in_terminal(
-                    SpawnInTerminal {
-                        id: TaskId(format!("ai-usage-sign-in-{}", account.id)),
-                        full_label: label.clone(),
-                        label: label.clone(),
-                        command: Some(command.to_string()),
-                        args: args.iter().map(|arg| arg.to_string()).collect(),
-                        command_label: label,
-                        use_new_terminal: true,
-                        show_command: true,
-                        ..SpawnInTerminal::default()
-                    },
-                    window,
-                    cx,
-                )
-                .detach();
+            let terminal = workspace.spawn_in_terminal(
+                SpawnInTerminal {
+                    id: TaskId(format!("ai-usage-sign-in-{}", account.id)),
+                    full_label: label.clone(),
+                    label: label.clone(),
+                    command: Some(command.to_string()),
+                    args: args.iter().map(|arg| arg.to_string()).collect(),
+                    command_label: label,
+                    use_new_terminal: true,
+                    show_command: true,
+                    ..SpawnInTerminal::default()
+                },
+                window,
+                cx,
+            );
             struct AccountAdded;
             workspace.show_toast(
                 Toast::new(
@@ -96,7 +113,11 @@ fn add_account(
                 ),
                 cx,
             );
-        })
+            terminal
+        })?;
+        terminal.await;
+        ai_usage.update(cx, |ai_usage, cx| ai_usage.finish_sign_in(&account.id, cx));
+        anyhow::Ok(())
     })
     .detach_and_notify_err(workspace.weak_handle(), window, cx);
 }
@@ -171,6 +192,10 @@ fn render_compact(provider: Provider, usage: Option<&AccountUsage>, cx: &App) ->
                 )
                 .into_any_element()
         }
+        Some(AccountUsage::SignedOut) => Label::new("sign in")
+            .size(LabelSize::Small)
+            .color(Color::Muted)
+            .into_any_element(),
         Some(AccountUsage::Failed(_)) => Icon::new(IconName::Warning)
             .size(IconSize::XSmall)
             .color(Color::Warning)
@@ -201,7 +226,7 @@ fn render_account_row(
                 .color(if is_active {
                     Color::Accent
                 } else {
-                    Color::Hidden
+                    Color::Custom(gpui::transparent_black())
                 }),
         )
         .child(Label::new(account.name.clone()))
@@ -235,6 +260,10 @@ fn render_account_row(
                             .color(Color::Muted)
                     }))
             }))
+            .into_any_element(),
+        Some(AccountUsage::SignedOut) => Label::new("Not signed in. Click to sign in.")
+            .size(LabelSize::Small)
+            .color(Color::Muted)
             .into_any_element(),
         Some(AccountUsage::Failed(error)) => Label::new(error.clone())
             .size(LabelSize::Small)
@@ -277,12 +306,23 @@ fn build_menu(ai_usage: Entity<AiUsage>, window: &mut Window, cx: &mut App) -> E
             for account in accounts {
                 let usage = ai_usage.read(cx).usage(&account.id).cloned();
                 let is_active = active_id.as_ref() == Some(&account.id);
+                let is_signed_out = matches!(usage, Some(AccountUsage::SignedOut));
                 let row_account = account.clone();
                 let ai_usage = ai_usage.clone();
                 menu = menu.custom_entry(
                     move |_, cx| render_account_row(&row_account, usage.as_ref(), is_active, cx),
-                    move |_, cx| {
-                        ai_usage.update(cx, |ai_usage, cx| ai_usage.set_active(&account, cx));
+                    move |window, cx| {
+                        if is_signed_out {
+                            window.dispatch_action(
+                                SignIn {
+                                    account_id: account.id.clone(),
+                                }
+                                .boxed_clone(),
+                                cx,
+                            );
+                        } else {
+                            ai_usage.update(cx, |ai_usage, cx| ai_usage.set_active(&account, cx));
+                        }
                     },
                 );
             }

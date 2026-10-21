@@ -35,6 +35,25 @@ actions!(
     ]
 );
 
+/// Signs in again to an account whose sign-in is missing.
+#[derive(Clone, Debug, PartialEq, gpui::Action)]
+#[action(namespace = ai_usage, no_json, no_register)]
+pub struct SignIn {
+    pub account_id: String,
+}
+
+/// Usage endpoints allow few requests, so the last numbers stay shown until they allow more.
+#[derive(Debug)]
+pub(crate) struct RateLimited;
+
+impl std::fmt::Display for RateLimited {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("too many usage requests; trying again shortly")
+    }
+}
+
+impl std::error::Error for RateLimited {}
+
 /// An AI coding CLI whose subscription usage Luna shows. Supporting another one means adding a
 /// module that loads its sign-in and fetches its usage windows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -137,6 +156,7 @@ pub struct UsageReport {
 pub enum AccountUsage {
     Loading,
     Loaded(UsageReport),
+    SignedOut,
     Failed(SharedString),
 }
 
@@ -157,9 +177,17 @@ pub struct AiUsage {
     usage: HashMap<String, AccountUsage>,
     http_client: Arc<dyn HttpClient>,
     refresh_task: Option<Task<()>>,
-    sign_in_watch: Option<Task<()>>,
+    pending_sign_in: Option<PendingSignIn>,
     last_refresh: Option<Instant>,
     _refresh_loop: Task<()>,
+}
+
+/// A sign-in started in a terminal, undone if the terminal exits before it finishes.
+struct PendingSignIn {
+    account: Account,
+    previous: Account,
+    is_new: bool,
+    _watch: Task<()>,
 }
 
 struct GlobalAiUsage(Entity<AiUsage>);
@@ -182,7 +210,7 @@ pub fn init(cx: &mut App) {
             usage: HashMap::default(),
             http_client,
             refresh_task: None,
-            sign_in_watch: None,
+            pending_sign_in: None,
             last_refresh: None,
             _refresh_loop: cx.spawn(async move |this, cx| {
                 loop {
@@ -301,9 +329,13 @@ impl AiUsage {
         cx.notify();
     }
 
-    /// Adds an account and makes it active with the CLI signed out, so the CLI asks to sign in
-    /// the next time it runs: Claude Code's current sign-in is saved for its account and
-    /// removed, and Codex runs with a directory of its own.
+    pub fn account(&self, account_id: &str) -> Option<Account> {
+        Provider::ALL
+            .into_iter()
+            .flat_map(|provider| self.accounts(provider))
+            .find(|account| account.id == account_id)
+    }
+
     pub fn add_account(
         &mut self,
         provider: Provider,
@@ -325,42 +357,63 @@ impl AiUsage {
             name: format!("{} {number}", provider.display_name()),
             config_dir,
         };
+        self.begin_sign_in(account, true, cx)
+    }
+
+    pub fn sign_in_again(
+        &mut self,
+        account: &Account,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Account>> {
+        self.begin_sign_in(account.clone(), false, cx)
+    }
+
+    /// Makes the account active with the CLI signed out, so the CLI asks to sign in the next
+    /// time it runs: Claude Code's current sign-in is saved for its account and removed, and
+    /// Codex runs with the account's own directory.
+    fn begin_sign_in(
+        &mut self,
+        account: Account,
+        is_new: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Account>> {
         let previous = self
-            .active_account(provider)
-            .unwrap_or_else(|| Account::default_for(provider));
+            .active_account(account.provider)
+            .unwrap_or_else(|| Account::default_for(account.provider));
         cx.spawn(async move |this, cx| {
             cx.background_spawn({
                 let account = account.clone();
+                let previous = previous.clone();
                 async move {
                     match account.provider {
-                        Provider::Claude => {
-                            if let Some(login) = claude_login::current_login().await? {
-                                claude_login::save_login(&previous.id, &login).await?;
-                            }
-                            claude_login::install_login(None).await?;
-                            // A terminal that comes up signed in would add the same account twice.
-                            anyhow::ensure!(
-                                claude_login::current_login().await?.is_none(),
-                                "couldn't sign Claude Code out of the current account"
-                            );
-                            Ok(())
+                        Provider::Claude => sign_out_claude(&previous).await,
+                        Provider::Codex if is_new => {
+                            prepare_codex_home(&account.effective_config_dir())
                         }
-                        Provider::Codex => prepare_codex_home(&account.effective_config_dir()),
+                        Provider::Codex => Ok(()),
                     }
                 }
             })
             .await?;
             this.update(cx, |this, cx| {
-                this.added_accounts.push(account.clone());
+                if is_new {
+                    this.added_accounts.push(account.clone());
+                }
                 this.mark_active(&account, cx);
-                this.watch_for_sign_in(account.clone(), cx);
+                this.watch_for_sign_in(account.clone(), previous, is_new, cx);
             })?;
             Ok(account)
         })
     }
 
-    /// Loads the new account's usage once its sign-in finishes in the terminal.
-    fn watch_for_sign_in(&mut self, account: Account, cx: &mut Context<Self>) {
+    /// Loads the account's usage once its sign-in finishes in the terminal.
+    fn watch_for_sign_in(
+        &mut self,
+        account: Account,
+        previous: Account,
+        is_new: bool,
+        cx: &mut Context<Self>,
+    ) {
         const CHECK_INTERVAL: Duration = Duration::from_secs(3);
         const GIVE_UP_AFTER: Duration = Duration::from_secs(15 * 60);
         self.usage.insert(
@@ -368,35 +421,94 @@ impl AiUsage {
             AccountUsage::Failed("waiting for sign-in".into()),
         );
         cx.notify();
-        self.sign_in_watch = Some(cx.spawn(async move |this, cx| {
-            let started = Instant::now();
-            while started.elapsed() < GIVE_UP_AFTER {
-                cx.background_executor().timer(CHECK_INTERVAL).await;
-                let signed_in_as = cx
-                    .background_spawn({
-                        let account = account.clone();
-                        async move { signed_in_name(&account).await }
-                    })
-                    .await;
-                let Some(name) = signed_in_as else {
-                    continue;
-                };
-                this.update(cx, |this, cx| {
-                    if let Some(added) = this
-                        .added_accounts
-                        .iter_mut()
-                        .find(|added| added.id == account.id)
-                        && let Some(name) = name
-                    {
-                        added.name = name;
+        let watch = cx.spawn({
+            let account = account.clone();
+            async move |this, cx| {
+                let started = Instant::now();
+                while started.elapsed() < GIVE_UP_AFTER {
+                    cx.background_executor().timer(CHECK_INTERVAL).await;
+                    let signed_in_as = cx
+                        .background_spawn({
+                            let account = account.clone();
+                            async move { signed_in_name(&account).await }
+                        })
+                        .await;
+                    if let Some(name) = signed_in_as {
+                        this.update(cx, |this, cx| this.complete_sign_in(&account.id, name, cx))
+                            .ok();
+                        return;
                     }
-                    this.save(cx);
-                    this.refresh(cx);
-                })
-                .ok();
-                return;
+                }
             }
-        }));
+        });
+        self.pending_sign_in = Some(PendingSignIn {
+            account,
+            previous,
+            is_new,
+            _watch: watch,
+        });
+    }
+
+    fn complete_sign_in(&mut self, account_id: &str, name: Option<String>, cx: &mut Context<Self>) {
+        self.pending_sign_in = None;
+        if let Some(added) = self
+            .added_accounts
+            .iter_mut()
+            .find(|added| added.id == account_id)
+            && let Some(name) = name
+        {
+            added.name = name;
+        }
+        self.save(cx);
+        self.refresh(cx);
+    }
+
+    /// Called once the sign-in terminal exits. A sign-in that didn't finish is undone: the
+    /// previous account becomes active again with its sign-in, and a new account is dropped.
+    pub fn finish_sign_in(&mut self, account_id: &str, cx: &mut Context<Self>) {
+        let Some(PendingSignIn {
+            account,
+            previous,
+            is_new,
+            ..
+        }) = self
+            .pending_sign_in
+            .take_if(|pending| pending.account.id == account_id)
+        else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let signed_in_as = cx
+                .background_spawn({
+                    let account = account.clone();
+                    async move { signed_in_name(&account).await }
+                })
+                .await;
+            if let Some(name) = signed_in_as {
+                return this.update(cx, |this, cx| this.complete_sign_in(&account.id, name, cx));
+            }
+            if account.provider == Provider::Claude {
+                cx.background_spawn({
+                    let previous = previous.clone();
+                    async move {
+                        if let Some(login) = claude_login::saved_login(&previous.id).await? {
+                            claude_login::install_login(Some(&login)).await?;
+                        }
+                        anyhow::Ok(())
+                    }
+                })
+                .await
+                .log_err();
+            }
+            this.update(cx, |this, cx| {
+                if is_new {
+                    this.remove_account(&account.id, cx);
+                }
+                this.mark_active(&previous, cx);
+                this.refresh(cx);
+            })
+        })
+        .detach_and_log_err(cx);
     }
 
     pub fn remove_account(&mut self, account_id: &str, cx: &mut Context<Self>) {
@@ -451,10 +563,17 @@ impl AiUsage {
                 .entry(account.id.clone())
                 .or_insert(AccountUsage::Loading);
         }
+        let waiting_for_sign_in = self
+            .pending_sign_in
+            .as_ref()
+            .map(|pending| pending.account.id.clone());
         cx.notify();
         let http_client = self.http_client.clone();
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
             for (account, is_active) in accounts {
+                if waiting_for_sign_in.as_ref() == Some(&account.id) {
+                    continue;
+                }
                 let http_client = http_client.clone();
                 let result = cx
                     .background_spawn({
@@ -462,8 +581,12 @@ impl AiUsage {
                         async move { fetch_usage(&account, is_active, http_client).await }
                     })
                     .await;
+                let rate_limited = result
+                    .as_ref()
+                    .is_err_and(|error| error.is::<RateLimited>());
                 let usage = match result {
-                    Ok(report) => AccountUsage::Loaded(report),
+                    Ok(Some(report)) => AccountUsage::Loaded(report),
+                    Ok(None) => AccountUsage::SignedOut,
                     Err(error) => {
                         log::info!("Couldn't load {} usage: {error:#}", account.name);
                         AccountUsage::Failed(format!("{error:#}").into())
@@ -471,6 +594,11 @@ impl AiUsage {
                 };
                 if this
                     .update(cx, |this, cx| {
+                        let has_numbers =
+                            matches!(this.usage.get(&account.id), Some(AccountUsage::Loaded(_)));
+                        if rate_limited && has_numbers {
+                            return;
+                        }
                         this.usage.insert(account.id.clone(), usage);
                         cx.notify();
                     })
@@ -517,7 +645,7 @@ async fn fetch_usage(
     account: &Account,
     is_active: bool,
     http_client: Arc<dyn HttpClient>,
-) -> Result<UsageReport> {
+) -> Result<Option<UsageReport>> {
     match account.provider {
         Provider::Claude => {
             // Only the active account's sign-in is in Claude Code's keychain item; the others
@@ -527,11 +655,35 @@ async fn fetch_usage(
             } else {
                 claude_login::saved_login(&account.id).await?
             };
-            let login = login.ok_or_else(|| anyhow!("not signed in"))?;
-            claude::fetch_usage(&login.credentials, http_client).await
+            let Some(login) = login else {
+                return Ok(None);
+            };
+            claude::fetch_usage(&login.credentials, http_client)
+                .await
+                .map(Some)
         }
-        Provider::Codex => codex::fetch_usage(&account.effective_config_dir(), http_client).await,
+        Provider::Codex => {
+            let config_dir = account.effective_config_dir();
+            if !config_dir.join("auth.json").exists() {
+                return Ok(None);
+            }
+            codex::fetch_usage(&config_dir, http_client).await.map(Some)
+        }
     }
+}
+
+/// Saves Claude Code's current sign-in for the account using it, then signs Claude Code out.
+async fn sign_out_claude(current_account: &Account) -> Result<()> {
+    if let Some(login) = claude_login::current_login().await? {
+        claude_login::save_login(&current_account.id, &login).await?;
+    }
+    claude_login::install_login(None).await?;
+    // A terminal that comes up signed in would add the same account twice.
+    anyhow::ensure!(
+        claude_login::current_login().await?.is_none(),
+        "couldn't sign Claude Code out of the current account"
+    );
+    Ok(())
 }
 
 /// Saves the outgoing account's sign-in, which Claude Code may have renewed since it was
