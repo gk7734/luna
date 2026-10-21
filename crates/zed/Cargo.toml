@@ -30,6 +30,14 @@ ai = [
     "settings_ui/ai",
     "language_tools/ai",
 ]
+collab = [
+    "dep:audio",
+    "dep:call",
+    "dep:collab_ui",
+    "git_ui/call",
+    "settings_ui/collab",
+    "title_bar/collab",
+]
 tracy = ["ztracing/tracy"]
 # LEAK_BACKTRACE=1 cargo run --features zed/track-project-leak --profile release-fast
 track-project-leak = ["gpui/leak-detection"]
@@ -48,6 +56,7 @@ test-support = [
 ]
 visual-tests = [
     "ai",
+    "collab",
     "gpui/test-support",
     "gpui_platform/screen-capture",
     "gpui_platform/test-support",
@@ -96,11 +105,11 @@ agent_ui = { workspace = true, optional = true, features = ["audio"] }
 anyhow.workspace = true
 askpass.workspace = true
 assets.workspace = true
-audio.workspace = true
+audio = { workspace = true, optional = true }
 auto_update.workspace = true
 auto_update_ui.workspace = true
 breadcrumbs.workspace = true
-call.workspace = true
+call = { workspace = true, optional = true }
 call_hierarchy.workspace = true
 channel.workspace = true
 chrono.workspace = true
@@ -109,9 +118,10 @@ cli.workspace = true
 client.workspace = true
 clock = { workspace = true, optional = true }
 codestral = { workspace = true, optional = true }
-collab_ui.workspace = true
+collab_ui = { workspace = true, optional = true }
 collections.workspace = true
 command_palette.workspace = true
+command_palette_hooks.workspace = true
 component_preview.workspace = true
 copilot = { workspace = true, optional = true }
 copilot_chat = { workspace = true, optional = true }
@@ -137,7 +147,7 @@ fs.workspace = true
 futures.workspace = true
 git.workspace = true
 git_hosting_providers.workspace = true
-git_ui = { workspace = true, features = ["call"] }
+git_ui.workspace = true
 git_ui_core.workspace = true
 go_to_line.workspace = true
 gpui = { workspace = true, features = ["profiler", "stacker"] }
@@ -281,7 +291,6 @@ pkg-config = "0.3.22"
 
 [dev-dependencies]
 activity_indicator = { workspace = true, features = ["test-support"] }
-call = { workspace = true, features = ["test-support"] }
 editor = { workspace = true, features = ["test-support"] }
 env_logger.workspace = true
 fs = { workspace = true, features = ["test-support"] }

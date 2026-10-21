@@ -1,5 +1,9 @@
-// AI settings pages stay compiled without the `ai` feature but are unreachable; `--features ai` builds keep these lints.
-#![cfg_attr(not(feature = "ai"), allow(dead_code, unused_imports))]
+// AI and collaboration settings pages stay compiled without the `ai` and `collab` features but are
+// unreachable; builds with both features keep these lints.
+#![cfg_attr(
+    not(all(feature = "ai", feature = "collab")),
+    allow(dead_code, unused_imports)
+)]
 mod components;
 mod page_data;
 pub mod pages;
@@ -60,10 +64,9 @@ use crate::components::{
     SettingsSectionHeader, font_picker, icon_theme_picker, render_ollama_model_picker,
     text_field_a11y_state, theme_picker,
 };
-use crate::pages::{
-    CustomAgentForm, LlmProviderForm, McpServerForm, render_input_audio_device_dropdown,
-    render_output_audio_device_dropdown,
-};
+use crate::pages::{CustomAgentForm, LlmProviderForm, McpServerForm};
+#[cfg(feature = "collab")]
+use crate::pages::{render_input_audio_device_dropdown, render_output_audio_device_dropdown};
 
 const NAVBAR_CONTAINER_TAB_INDEX: isize = 0;
 const NAVBAR_GROUP_TAB_INDEX: isize = 1;
@@ -679,11 +682,13 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<settings::SemanticTokens>(render_dropdown)
         .add_basic_renderer::<settings::DocumentFoldingRanges>(render_dropdown)
         .add_basic_renderer::<settings::DocumentSymbols>(render_dropdown)
-        .add_basic_renderer::<settings::AudioInputDeviceName>(render_input_audio_device_dropdown)
-        .add_basic_renderer::<settings::AudioOutputDeviceName>(render_output_audio_device_dropdown)
         .add_basic_renderer::<settings::TerminalBell>(render_dropdown)
         // please semicolon stay on next line
         ;
+    #[cfg(feature = "collab")]
+    cx.default_global::<SettingFieldRenderer>()
+        .add_basic_renderer::<settings::AudioInputDeviceName>(render_input_audio_device_dropdown)
+        .add_basic_renderer::<settings::AudioOutputDeviceName>(render_output_audio_device_dropdown);
 }
 
 #[derive(Clone, Copy)]

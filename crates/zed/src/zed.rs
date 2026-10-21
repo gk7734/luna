@@ -196,6 +196,16 @@ actions!(
     ]
 );
 
+/// Channels, calls and their notifications need a zed.dev account, so they only exist in builds
+/// with the `collab` feature.
+#[cfg(feature = "collab")]
+pub fn init_collab(app_state: &Arc<AppState>, cx: &mut App) {
+    audio::init(cx);
+    channel::init(&app_state.client, app_state.user_store.clone(), cx);
+    call::init(app_state.client.clone(), app_state.user_store.clone(), cx);
+    notifications::init(app_state.client.clone(), app_state.user_store.clone(), cx);
+}
+
 pub fn init(cx: &mut App) {
     #[cfg(target_os = "macos")]
     cx.on_action(|_: &Hide, cx| cx.hide());
@@ -796,6 +806,7 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
         let outline_panel = OutlinePanel::load(workspace_handle.clone(), cx.clone());
         let terminal_panel = TerminalPanel::load(workspace_handle.clone(), cx.clone());
         let git_panel = GitPanel::load(workspace_handle.clone(), cx.clone());
+        #[cfg(feature = "collab")]
         let channels_panel =
             collab_ui::collab_panel::CollabPanel::load(workspace_handle.clone(), cx.clone());
         let debug_panel = DebugPanel::load(workspace_handle.clone(), cx);
@@ -820,7 +831,10 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
             add_panel_when_ready(outline_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(terminal_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(git_panel, workspace_handle.clone(), cx.clone()),
-            add_panel_when_ready(channels_panel, workspace_handle.clone(), cx.clone()),
+            async {
+                #[cfg(feature = "collab")]
+                add_panel_when_ready(channels_panel, workspace_handle.clone(), cx.clone()).await;
+            },
             add_panel_when_ready(debug_panel, workspace_handle.clone(), cx.clone()),
             initialize_agent_panel(workspace_handle.clone(), cx.clone()).map(|r| r.log_err()),
         );
@@ -1363,14 +1377,6 @@ fn register_actions(
         )
         .register_action(
             |workspace: &mut Workspace,
-             _: &collab_ui::collab_panel::ToggleFocus,
-             window: &mut Window,
-             cx: &mut Context<Workspace>| {
-                workspace.toggle_panel_focus::<collab_ui::collab_panel::CollabPanel>(window, cx);
-            },
-        )
-        .register_action(
-            |workspace: &mut Workspace,
              _: &terminal_panel::ToggleFocus,
              window: &mut Window,
              cx: &mut Context<Workspace>| {
@@ -1425,6 +1431,16 @@ fn register_actions(
 
     #[cfg(not(target_os = "windows"))]
     workspace.register_action(install_cli);
+
+    #[cfg(feature = "collab")]
+    workspace.register_action(
+        |workspace: &mut Workspace,
+         _: &collab_ui::collab_panel::ToggleFocus,
+         window: &mut Window,
+         cx: &mut Context<Workspace>| {
+            workspace.toggle_panel_focus::<collab_ui::collab_panel::CollabPanel>(window, cx);
+        },
+    );
 
     if workspace.project().read(cx).is_via_remote_server() {
         workspace.register_action({
@@ -2430,14 +2446,15 @@ pub fn load_default_keymap(cx: &mut App) {
     ));
 }
 
-#[cfg(feature = "ai")]
+#[cfg(all(feature = "ai", feature = "collab"))]
 fn load_builtin_keymap(asset_path: &str, source: KeybindSource, cx: &App) -> Vec<KeyBinding> {
     KeymapFile::load_asset(asset_path, Some(source), cx).unwrap()
 }
 
-/// Built-in keymaps bind actions from AI crates that aren't compiled without the `ai` feature,
-/// so those bindings fail to load and are skipped instead of panicking.
-#[cfg(not(feature = "ai"))]
+/// Built-in keymaps bind actions from AI and collaboration crates that aren't compiled without
+/// the `ai` and `collab` features, so those bindings fail to load and are skipped instead of
+/// panicking.
+#[cfg(not(all(feature = "ai", feature = "collab")))]
 fn load_builtin_keymap(asset_path: &str, source: KeybindSource, cx: &App) -> Vec<KeyBinding> {
     let mut bindings = KeymapFile::load_asset_allow_partial_failure(asset_path, cx).unwrap();
     for binding in &mut bindings {
@@ -6066,6 +6083,12 @@ mod tests {
                 .into_iter()
                 .filter(|namespace| !["edit_prediction", "zeta"].contains(namespace))
                 .collect::<Vec<_>>();
+            // Registered by crates that are only compiled with the `collab` feature.
+            #[cfg(not(feature = "collab"))]
+            let expected_namespaces = expected_namespaces
+                .into_iter()
+                .filter(|namespace| !["channel_modal", "collab_panel"].contains(namespace))
+                .collect::<Vec<_>>();
             assert_eq!(
                 all_namespaces,
                 expected_namespaces
@@ -6243,14 +6266,13 @@ mod tests {
             gpui_tokio::init(cx);
             AppState::set_global(app_state.clone(), cx);
             theme_settings::init(theme::LoadThemes::JustBase, cx);
-            audio::init(cx);
-            channel::init(&app_state.client, app_state.user_store.clone(), cx);
-            call::init(app_state.client.clone(), app_state.user_store.clone(), cx);
-            notifications::init(app_state.client.clone(), app_state.user_store.clone(), cx);
+            #[cfg(feature = "collab")]
+            init_collab(&app_state, cx);
             workspace::init(app_state.clone(), cx);
             release_channel::init(Version::new(0, 0, 0), cx);
             command_palette::init(cx);
             editor::init(cx);
+            #[cfg(feature = "collab")]
             collab_ui::init(&app_state, cx);
             git_ui::init(cx);
             project_panel::init(cx);

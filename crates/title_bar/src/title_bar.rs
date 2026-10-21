@@ -1,4 +1,6 @@
+#![cfg_attr(not(feature = "collab"), allow(dead_code, unused_imports))]
 mod application_menu;
+#[cfg(feature = "collab")]
 pub mod collab;
 mod onboarding_banner;
 mod plan_chip;
@@ -21,7 +23,9 @@ use crate::application_menu::{
     ActivateDirection, ActivateMenuLeft, ActivateMenuRight, OpenApplicationMenu,
 };
 
+#[cfg(feature = "collab")]
 use auto_update::AutoUpdateStatus;
+#[cfg(feature = "collab")]
 use call::ActiveCall;
 use client::{Client, UserStore, zed_urls};
 use command_palette_hooks::CommandPaletteFilter;
@@ -218,7 +222,9 @@ pub struct TitleBar {
     _subscriptions: Vec<Subscription>,
     banner: Option<Entity<OnboardingBanner>>,
     update_version: Entity<UpdateVersion>,
+    #[cfg(feature = "collab")]
     screen_share_popover_handle: PopoverMenuHandle<ContextMenu>,
+    #[cfg(feature = "collab")]
     _diagnostics_subscription: Option<gpui::Subscription>,
 }
 
@@ -352,6 +358,7 @@ impl Render for TitleBar {
                 .into_any_element(),
         );
 
+        #[cfg(feature = "collab")]
         children.push(self.render_collaborator_list(window, cx).into_any_element());
 
         if title_bar_settings.show_onboarding_banner {
@@ -360,50 +367,16 @@ impl Render for TitleBar {
             }
         }
 
-        let status = self.client.status();
-        let status = &*status.borrow();
-        let user = self.user_store.read(cx).current_user();
-        let is_signing_in = user.is_none()
-            && matches!(
-                status,
-                client::Status::Authenticating
-                    | client::Status::Authenticated
-                    | client::Status::Connecting
-            );
-        let is_signed_out_or_auth_error = user.is_none()
-            && matches!(
-                status,
-                client::Status::SignedOut | client::Status::AuthenticationError
-            );
-
+        let controls = h_flex()
+            .pr_1()
+            .gap_1()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+        #[cfg(feature = "collab")]
+        let controls = self.render_collab_controls(controls, window, cx);
+        #[cfg(not(feature = "collab"))]
+        let controls = controls.child(self.update_version.clone());
         children.push(
-            h_flex()
-                .pr_1()
-                .gap_1()
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(self.render_call_controls(window, cx))
-                .children(self.render_connection_status(status, cx))
-                .child(self.update_version.clone())
-                .when(
-                    user.is_none()
-                        && is_signed_out_or_auth_error
-                        && TitleBarSettings::get_global(cx).show_sign_in,
-                    |this| this.child(self.render_sign_in_button(cx)),
-                )
-                .when(is_signing_in, |this| {
-                    this.child(
-                        Label::new("Signing in…")
-                            .size(LabelSize::Small)
-                            .color(Color::Muted)
-                            .with_animation(
-                                "signing-in",
-                                Animation::new(Duration::from_secs(2))
-                                    .repeat()
-                                    .with_easing(pulsating_between(0.4, 0.8)),
-                                |label, delta| label.alpha(delta),
-                            ),
-                    )
-                })
+            controls
                 .when(TitleBarSettings::get_global(cx).show_user_menu, |this| {
                     this.child(self.render_user_menu_button(cx))
                 })
@@ -460,7 +433,6 @@ impl TitleBar {
         let git_store = project.read(cx).git_store().clone();
         let user_store = workspace.app_state().user_store.clone();
         let client = workspace.app_state().client.clone();
-        let active_call = ActiveCall::global(cx);
 
         let platform_style = PlatformStyle::platform();
         let application_menu = match platform_style {
@@ -483,7 +455,10 @@ impl TitleBar {
             }),
         );
 
-        subscriptions.push(cx.observe(&active_call, |this, _, cx| this.active_call_changed(cx)));
+        #[cfg(feature = "collab")]
+        subscriptions.push(cx.observe(&ActiveCall::global(cx), |this, _, cx| {
+            this.active_call_changed(cx)
+        }));
         subscriptions.push(
             cx.subscribe(&git_store, move |_, _, event, cx| match event {
                 GitStoreEvent::ActiveRepositoryChanged(_)
@@ -522,6 +497,7 @@ impl TitleBar {
 
         let banner = None;
 
+        #[cfg_attr(not(feature = "collab"), allow(unused_mut))]
         let mut this = Self {
             platform_titlebar,
             application_menu,
@@ -533,10 +509,13 @@ impl TitleBar {
             _subscriptions: subscriptions,
             banner,
             update_version,
+            #[cfg(feature = "collab")]
             screen_share_popover_handle: PopoverMenuHandle::default(),
+            #[cfg(feature = "collab")]
             _diagnostics_subscription: None,
         };
 
+        #[cfg(feature = "collab")]
         this.observe_diagnostics(cx);
 
         this
@@ -1114,11 +1093,13 @@ impl TitleBar {
         )
     }
 
+    #[cfg(feature = "collab")]
     fn active_call_changed(&mut self, cx: &mut Context<Self>) {
         self.observe_diagnostics(cx);
         cx.notify();
     }
 
+    #[cfg(feature = "collab")]
     fn observe_diagnostics(&mut self, cx: &mut Context<Self>) {
         let diagnostics = ActiveCall::global(cx)
             .read(cx)
@@ -1132,6 +1113,7 @@ impl TitleBar {
         }
     }
 
+    #[cfg(feature = "collab")]
     fn share_project(&mut self, cx: &mut Context<Self>) {
         let active_call = ActiveCall::global(cx);
         let project = self.project.clone();
@@ -1140,6 +1122,7 @@ impl TitleBar {
             .detach_and_log_err(cx);
     }
 
+    #[cfg(feature = "collab")]
     fn unshare_project(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         let active_call = ActiveCall::global(cx);
         let project = self.project.clone();
@@ -1148,6 +1131,54 @@ impl TitleBar {
             .log_err();
     }
 
+    #[cfg(feature = "collab")]
+    fn render_collab_controls(
+        &mut self,
+        controls: Div,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let status = self.client.status();
+        let status = &*status.borrow();
+        let user = self.user_store.read(cx).current_user();
+        let is_signing_in = user.is_none()
+            && matches!(
+                status,
+                client::Status::Authenticating
+                    | client::Status::Authenticated
+                    | client::Status::Connecting
+            );
+        let is_signed_out_or_auth_error = user.is_none()
+            && matches!(
+                status,
+                client::Status::SignedOut | client::Status::AuthenticationError
+            );
+
+        controls
+            .child(self.render_call_controls(window, cx))
+            .children(self.render_connection_status(status, cx))
+            .child(self.update_version.clone())
+            .when(
+                is_signed_out_or_auth_error && TitleBarSettings::get_global(cx).show_sign_in,
+                |this| this.child(self.render_sign_in_button(cx)),
+            )
+            .when(is_signing_in, |this| {
+                this.child(
+                    Label::new("Signing in…")
+                        .size(LabelSize::Small)
+                        .color(Color::Muted)
+                        .with_animation(
+                            "signing-in",
+                            Animation::new(Duration::from_secs(2))
+                                .repeat()
+                                .with_easing(pulsating_between(0.4, 0.8)),
+                            |label, delta| label.alpha(delta),
+                        ),
+                )
+            })
+    }
+
+    #[cfg(feature = "collab")]
     fn render_connection_status(
         &self,
         status: &client::Status,
@@ -1196,6 +1227,7 @@ impl TitleBar {
         }
     }
 
+    #[cfg(feature = "collab")]
     pub fn render_sign_in_button(&mut self, _: &mut Context<Self>) -> Button {
         let client = self.client.clone();
         let workspace = self.workspace.clone();
@@ -1226,7 +1258,7 @@ impl TitleBar {
         let user_avatar = user.as_ref().map(|u| u.avatar_uri.clone());
         let username = user.as_ref().map(|u| u.username.clone());
 
-        let is_signed_in = user.is_some();
+        let is_signed_in = cfg!(feature = "collab") && user.is_some();
 
         let current_organization = user_store.read(cx).current_organization();
         let business_organization = current_organization

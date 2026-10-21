@@ -8,7 +8,7 @@ use fs::Fs;
 use gpui::{Action, Animation, AnimationExt, App, Entity, IntoElement, TaskExt, pulsating_between};
 use project::agent_server_store::AllAgentServersSettings;
 use project::project_settings::ProjectSettings;
-use project::{AgentRegistryStore, RegistryAgent};
+use project::{AgentRegistryStore, DisableAiSettings, RegistryAgent};
 use settings::{
     BaseKeymap, CustomAgentServerSettings, Settings, SettingsStore, update_settings_file,
 };
@@ -720,7 +720,9 @@ pub(crate) fn render_basics_page(user_store: &Entity<UserStore>, cx: &mut App) -
         .gap_6()
         .child(render_theme_section(&mut tab_index, cx))
         .child(render_base_keymap_section(&mut tab_index, cx))
-        .child(render_ai_section(user_store, cx))
+        .when(!DisableAiSettings::get_global(cx).disable_ai, |page| {
+            page.child(render_ai_section(user_store, cx))
+        })
         .child(render_import_settings_section(&mut tab_index, cx))
         .child(render_vim_mode_switch(&mut tab_index, cx))
         .child(render_worktree_auto_trust_switch(&mut tab_index, cx))

@@ -23,6 +23,7 @@ use cli::FORCE_CLI_MODE_ENV_VAR_NAME;
 #[cfg(feature = "ai")]
 use client::RefreshLlmTokenListener;
 use client::{Client, ProxySettings, UserStore, parse_zed_link};
+#[cfg(feature = "collab")]
 use collab_ui::channel_view::ChannelView;
 use collections::HashMap;
 use crashes::InitCrashHandler;
@@ -30,7 +31,7 @@ use db::kvp::{GlobalKeyValueStore, KeyValueStore};
 use editor::Editor;
 use extension::ExtensionHostProxy;
 use fs::{Fs, RealFs};
-use futures::{FutureExt, StreamExt, channel::oneshot, future};
+use futures::{FutureExt, StreamExt, channel::oneshot};
 use git::GitHostingProviderRegistry;
 use git_ui::clone::clone_and_open;
 use gpui::{
@@ -68,13 +69,11 @@ use std::{
 };
 use theme::{ActiveTheme, GlobalTheme, ThemeRegistry};
 use theme_settings::load_user_theme;
-use util::{ResultExt, maybe};
+use util::ResultExt;
 use uuid::Uuid;
 use workspace::{
     AppState, MultiWorkspace, SerializedWorkspaceLocation, SessionWorkspace, Toast,
-    WorkspaceSettings, WorkspaceStore,
-    notifications::{NotificationId, NotifyResultExt},
-    restore_multiworkspace,
+    WorkspaceSettings, WorkspaceStore, notifications::NotificationId, restore_multiworkspace,
 };
 #[cfg(feature = "ai")]
 use zed::edit_prediction_registry;
@@ -704,7 +703,6 @@ fn main() {
         repl::notebook::init(cx);
         diagnostics::init(cx);
 
-        audio::init(cx);
         workspace::init(app_state.clone(), cx);
         ui_prompt::init(cx);
 
@@ -719,7 +717,6 @@ fn main() {
         outline_panel::init(cx);
         tasks_ui::init(cx);
         snippets_ui::init(cx);
-        channel::init(&app_state.client.clone(), app_state.user_store.clone(), cx);
         search::init(cx);
         lsp_locations::init(cx);
         cx.set_global(workspace::PaneSearchBarCallbacks {
@@ -742,9 +739,13 @@ fn main() {
         theme_selector::init(cx);
         settings_profile_selector::init(cx);
         language_tools::init(cx);
-        call::init(app_state.client.clone(), app_state.user_store.clone(), cx);
-        notifications::init(app_state.client.clone(), app_state.user_store.clone(), cx);
-        collab_ui::init(&app_state, cx);
+        #[cfg(feature = "collab")]
+        {
+            zed::init_collab(&app_state, cx);
+            collab_ui::init(&app_state, cx);
+        }
+        #[cfg(not(feature = "collab"))]
+        hide_account_actions(cx);
         git_ui::init(cx);
         feedback::init(cx);
         markdown_preview::init(cx);
@@ -849,6 +850,7 @@ fn main() {
 
         cx.activate(true);
 
+        #[cfg(feature = "collab")]
         cx.spawn({
             let client = app_state.client.clone();
             async move |cx| authenticate(client, cx).await
@@ -1279,60 +1281,23 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
         }));
     }
 
-    if !request.open_channel_notes.is_empty() || request.join_channel.is_some() {
-        cx.spawn(async move |cx| {
-            let result = maybe!(async {
-                if let Some(task) = task {
-                    task.await?;
-                }
-                let client = app_state.client.clone();
-                // we continue even if connection fails as join_channel/ open channel notes will
-                // show a visible error message.
-                client.connect(true, cx).await.into_response().log_err();
-
-                if let Some(channel_id) = request.join_channel {
-                    cx.update(|cx| {
-                        workspace::join_channel(
-                            client::ChannelId(channel_id),
-                            app_state.clone(),
-                            None,
-                            None,
-                            cx,
-                        )
-                    })
-                    .await?;
-                }
-
-                let workspace_window =
-                    workspace::get_any_active_multi_workspace(app_state, cx.clone()).await?;
-
-                let workspace = workspace_window.read_with(cx, |mw, _| mw.workspace().clone())?;
-                let weak_workspace = workspace.downgrade();
-
-                let mut promises = Vec::new();
-                for (channel_id, heading) in request.open_channel_notes {
-                    promises.push(cx.update_window(workspace_window.into(), |_, window, cx| {
-                        ChannelView::open(
-                            client::ChannelId(channel_id),
-                            heading,
-                            workspace.clone(),
-                            window,
-                            cx,
-                        )
-                    })?)
-                }
-                for result in future::join_all(promises).await {
-                    result.notify_workspace_async_err(weak_workspace.clone(), cx);
-                }
-                anyhow::Ok(())
-            })
-            .await;
-            if let Err(err) = result {
-                fail_to_open_window_async(err, cx);
-            }
-        })
-        .detach()
-    } else if let Some(task) = task {
+    let opens_channel = !request.open_channel_notes.is_empty() || request.join_channel.is_some();
+    #[cfg(not(feature = "collab"))]
+    if opens_channel {
+        log::warn!("Ignoring channel link: collaboration is not included in this build");
+    }
+    #[cfg(feature = "collab")]
+    if opens_channel {
+        open_channel_request(
+            request.join_channel,
+            request.open_channel_notes,
+            task,
+            app_state,
+            cx,
+        );
+        return;
+    }
+    if let Some(task) = task {
         cx.spawn(async move |cx| {
             if let Err(err) = task.await {
                 fail_to_open_window_async(err, cx);
@@ -1342,6 +1307,89 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
     }
 }
 
+#[cfg(feature = "collab")]
+fn open_channel_request(
+    join_channel: Option<u64>,
+    open_channel_notes: Vec<(u64, Option<String>)>,
+    task: Option<Task<anyhow::Result<()>>>,
+    app_state: Arc<AppState>,
+    cx: &mut App,
+) {
+    use futures::future;
+    use util::maybe;
+    use workspace::notifications::NotifyResultExt as _;
+
+    cx.spawn(async move |cx| {
+        let result = maybe!(async {
+            if let Some(task) = task {
+                task.await?;
+            }
+            let client = app_state.client.clone();
+            // we continue even if connection fails as join_channel/ open channel notes will
+            // show a visible error message.
+            client.connect(true, cx).await.into_response().log_err();
+
+            if let Some(channel_id) = join_channel {
+                cx.update(|cx| {
+                    workspace::join_channel(
+                        client::ChannelId(channel_id),
+                        app_state.clone(),
+                        None,
+                        None,
+                        cx,
+                    )
+                })
+                .await?;
+            }
+
+            let workspace_window =
+                workspace::get_any_active_multi_workspace(app_state, cx.clone()).await?;
+
+            let workspace = workspace_window.read_with(cx, |mw, _| mw.workspace().clone())?;
+            let weak_workspace = workspace.downgrade();
+
+            let mut promises = Vec::new();
+            for (channel_id, heading) in open_channel_notes {
+                promises.push(cx.update_window(workspace_window.into(), |_, window, cx| {
+                    ChannelView::open(
+                        client::ChannelId(channel_id),
+                        heading,
+                        workspace.clone(),
+                        window,
+                        cx,
+                    )
+                })?)
+            }
+            for result in future::join_all(promises).await {
+                result.notify_workspace_async_err(weak_workspace.clone(), cx);
+            }
+            anyhow::Ok(())
+        })
+        .await;
+        if let Err(err) = result {
+            fail_to_open_window_async(err, cx);
+        }
+    })
+    .detach()
+}
+
+/// Signing in to zed.dev only serves collaboration, so builds without it hide the account actions
+/// that would otherwise connect to the collaboration server.
+#[cfg(not(feature = "collab"))]
+fn hide_account_actions(cx: &mut App) {
+    use std::any::TypeId;
+    command_palette_hooks::CommandPaletteFilter::update_global(cx, |filter, _| {
+        filter.hide_action_types(&[
+            TypeId::of::<client::SignIn>(),
+            TypeId::of::<client::SignOut>(),
+            TypeId::of::<client::Reconnect>(),
+            TypeId::of::<onboarding::SignIn>(),
+            TypeId::of::<onboarding::OpenAccount>(),
+        ]);
+    });
+}
+
+#[cfg(feature = "collab")]
 async fn authenticate(client: Arc<Client>, cx: &AsyncApp) -> Result<()> {
     if stdout_is_a_pty() {
         if client::IMPERSONATE_LOGIN.is_some() {

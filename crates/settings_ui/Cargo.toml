@@ -14,6 +14,7 @@ doctest = false
 
 [features]
 ai = ["dep:agent", "dep:codestral", "dep:copilot", "dep:copilot_ui", "dep:edit_prediction", "dep:edit_prediction_ui"]
+collab = ["dep:audio", "dep:cpal", "dep:rodio"]
 default = []
 test-support = []
 
@@ -22,7 +23,7 @@ agent = { workspace = true, optional = true }
 agent_settings.workspace = true
 agent_skills.workspace = true
 anyhow.workspace = true
-audio.workspace = true
+audio = { workspace = true, optional = true }
 client.workspace = true
 cloud_api_types.workspace = true
 component.workspace = true
@@ -31,7 +32,7 @@ collections.workspace = true
 context_server.workspace = true
 copilot = { workspace = true, optional = true }
 copilot_ui = { workspace = true, optional = true }
-cpal.workspace = true
+cpal = { workspace = true, optional = true }
 edit_prediction = { workspace = true, optional = true }
 edit_prediction_ui = { workspace = true, optional = true }
 editor.workspace = true
@@ -56,7 +57,7 @@ regex.workspace = true
 platform_title_bar.workspace = true
 project.workspace = true
 release_channel.workspace = true
-rodio.workspace = true
+rodio = { workspace = true, optional = true }
 schemars.workspace = true
 search.workspace = true
 serde.workspace = true

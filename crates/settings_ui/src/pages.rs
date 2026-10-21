@@ -1,4 +1,6 @@
+#[cfg(feature = "collab")]
 mod audio_input_output_setup;
+#[cfg(feature = "collab")]
 mod audio_test_window;
 #[cfg(feature = "ai")]
 mod edit_prediction_provider_setup;
@@ -12,9 +14,11 @@ mod skills_setup;
 #[cfg(feature = "ai")]
 mod tool_permissions_setup;
 
+#[cfg(feature = "collab")]
 pub(crate) use audio_input_output_setup::{
     render_input_audio_device_dropdown, render_output_audio_device_dropdown,
 };
+#[cfg(feature = "collab")]
 pub(crate) use audio_test_window::open_audio_test_window;
 #[cfg(feature = "ai")]
 pub(crate) use edit_prediction_provider_setup::render_edit_prediction_setup_page;

@@ -9,6 +9,8 @@ use strum::{EnumMessage, IntoDiscriminant as _, VariantArray};
 use theme::SystemAppearance;
 use ui::IntoElement;
 
+#[cfg(feature = "collab")]
+use crate::pages::open_audio_test_window;
 #[cfg(feature = "ai")]
 use crate::pages::{
     render_edit_prediction_setup_page, render_external_agents_page, render_llm_providers_page,
@@ -17,7 +19,7 @@ use crate::pages::{
 use crate::{
     ActionLink, DynamicItem, PROJECT, SettingField, SettingItem, SettingsFieldMetadata,
     SettingsPage, SettingsPageItem, SubPageLink, USER, active_language, all_language_names,
-    pages::{open_audio_test_window, render_sandbox_settings_page},
+    pages::render_sandbox_settings_page,
 };
 
 const DEFAULT_STRING: String = String::new();
@@ -76,6 +78,7 @@ pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
         debugger_page(),
         terminal_page(),
         version_control_page(),
+        #[cfg(feature = "collab")]
         collaboration_page(),
     ];
     #[cfg(feature = "ai")]
@@ -6908,6 +6911,12 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
+    #[cfg(not(feature = "collab"))]
+    fn collaboration_panel_section() -> [SettingsPageItem; 0] {
+        []
+    }
+
+    #[cfg(feature = "collab")]
     fn collaboration_panel_section() -> [SettingsPageItem; 4] {
         [
             SettingsPageItem::SectionHeader("Collaboration Panel"),
@@ -8639,6 +8648,7 @@ fn version_control_page() -> SettingsPage {
     }
 }
 
+#[cfg(feature = "collab")]
 fn collaboration_page() -> SettingsPage {
     fn calls_section() -> [SettingsPageItem; 3] {
         [
