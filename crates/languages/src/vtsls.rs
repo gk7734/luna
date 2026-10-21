@@ -25,6 +25,8 @@ const ACTION_ALWAYS: &str = "Always";
 const ACTION_NEVER: &str = "Never";
 const UPDATE_IMPORTS_MESSAGE_PATTERN: &str = "Update imports for";
 const VTSLS_SERVER_NAME: &str = "vtsls";
+const ESLINT_PLUGIN_NAME: &str = "zed-tsserver-eslint";
+const ESLINT_PLUGIN_SOURCE: &str = include_str!("tsserver_eslint_plugin.js");
 
 fn typescript_server_binary_arguments(server_path: &Path) -> Vec<OsString> {
     vec![server_path.into(), "--stdio".into()]
@@ -36,6 +38,35 @@ pub struct VtslsLspAdapter {
 }
 
 impl VtslsLspAdapter {
+    /// Writes the tsserver plugin that runs ESLint inside tsserver, returning the directory
+    /// tsserver probes for it.
+    async fn install_eslint_plugin(
+        &self,
+        delegate: &Arc<dyn LspAdapterDelegate>,
+    ) -> Result<Option<PathBuf>> {
+        let Some(server_directory) = delegate.language_server_download_dir(&SERVER_NAME).await
+        else {
+            return Ok(None);
+        };
+        let location = server_directory.join("tsserver-plugins");
+        let package_directory = location.join("node_modules").join(ESLINT_PLUGIN_NAME);
+        let index_path = package_directory.join("index.js");
+        if self.fs.load(&index_path).await.ok().as_deref() != Some(ESLINT_PLUGIN_SOURCE) {
+            self.fs.create_dir(&package_directory).await?;
+            let package_json = json!({ "name": ESLINT_PLUGIN_NAME, "main": "index.js" });
+            self.fs
+                .write(
+                    &package_directory.join("package.json"),
+                    package_json.to_string().as_bytes(),
+                )
+                .await?;
+            self.fs
+                .write(&index_path, ESLINT_PLUGIN_SOURCE.as_bytes())
+                .await?;
+        }
+        Ok(Some(location))
+    }
+
     const PACKAGE_NAME: &'static str = "@vtsls/language-server";
     const SERVER_PATH: &'static str = "node_modules/@vtsls/language-server/bin/vtsls.js";
 
@@ -281,8 +312,14 @@ impl LspAdapter for VtslsLspAdapter {
                 "showOnAllFunctions": true
             },
             "tsserver": {
-                "maxTsServerMemory": 8192
+                // WebStorm's limit; V8 lets the heap grow lazier the higher the limit is.
+                "maxTsServerMemory": 3072,
+                // A second tsserver that only answers syntax requests while the project loads.
+                "useSyntaxServer": "never"
             },
+            // Downloads @types packages into a global cache from its own process; projects
+            // install their types with their package manager.
+            "disableAutomaticTypeAcquisition": true,
         });
 
         let mut default_workspace_configuration = serde_json::json!({
@@ -298,6 +335,21 @@ impl LspAdapter for VtslsLspAdapter {
                "autoUseWorkspaceTsdk": true
             }
         });
+        // ESLint runs inside tsserver instead of as its own language server for these languages.
+        if let Some(location) = self
+            .install_eslint_plugin(delegate)
+            .await
+            .log_err()
+            .flatten()
+        {
+            default_workspace_configuration["vtsls"]["tsserver"] = json!({
+                "globalPlugins": [{
+                    "name": ESLINT_PLUGIN_NAME,
+                    "location": location,
+                    "enableForWorkspaceTypeScriptVersions": true,
+                }]
+            });
+        }
 
         let override_options = cx.update(|cx| {
             language_server_settings(delegate.as_ref(), &SERVER_NAME, cx)

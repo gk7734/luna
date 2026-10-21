@@ -296,7 +296,8 @@ pub fn init(languages: Arc<LanguageRegistry>, fs: Arc<dyn Fs>, node: NodeRuntime
         languages.register_lsp_adapter(language.into(), tailwind_adapter.clone());
     }
 
-    let eslint_languages = ["TSX", "TypeScript", "JavaScript", "Vue.js", "Svelte"];
+    // vtsls runs ESLint inside tsserver for TSX, TypeScript and JavaScript.
+    let eslint_languages = ["Vue.js", "Svelte"];
     for language in eslint_languages {
         languages.register_lsp_adapter(language.into(), eslint_adapter.clone());
     }
