@@ -431,6 +431,17 @@ impl TestAppContext {
         self.test_platform.opened_url.borrow().clone()
     }
 
+    /// Makes the test platform's spell checker flag `word`, suggesting `suggestions` for it.
+    pub fn add_misspelled_word(&self, word: &str, suggestions: &[&str]) {
+        self.test_platform.misspelled_words.borrow_mut().push((
+            word.to_string(),
+            suggestions
+                .iter()
+                .map(|suggestion| suggestion.to_string())
+                .collect(),
+        ));
+    }
+
     /// Returns the application identity configured during this test.
     pub fn app_identity(&self) -> Option<(SharedString, SharedString)> {
         self.test_platform.app_identity()

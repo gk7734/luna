@@ -828,6 +828,75 @@ impl Platform for MacPlatform {
         }
     }
 
+    fn has_spell_checker(&self) -> bool {
+        true
+    }
+
+    fn misspelled_ranges(&self, text: &str) -> Vec<std::ops::Range<usize>> {
+        use objc2_app_kit::NSSpellChecker;
+        use objc2_foundation::{NSNotFound, NSString};
+
+        let string = NSString::from_str(text);
+        // AppKit reports UTF-16 offsets.
+        let mut byte_offsets = Vec::with_capacity(string.length() + 1);
+        for (byte_offset, character) in text.char_indices() {
+            byte_offsets.extend(std::iter::repeat_n(byte_offset, character.len_utf16()));
+        }
+        byte_offsets.push(text.len());
+
+        let spell_checker = NSSpellChecker::sharedSpellChecker();
+        let mut ranges = Vec::new();
+        let mut utf16_offset = 0;
+        while utf16_offset < string.length() {
+            // SAFETY: `wordCount` may be null.
+            let range = unsafe {
+                spell_checker
+                    .checkSpellingOfString_startingAt_language_wrap_inSpellDocumentWithTag_wordCount(
+                        &string,
+                        utf16_offset as isize,
+                        None,
+                        false,
+                        0,
+                        std::ptr::null_mut(),
+                    )
+            };
+            if range.location == NSNotFound as usize || range.length == 0 {
+                break;
+            }
+            let end = range.location + range.length;
+            if let (Some(start_byte), Some(end_byte)) =
+                (byte_offsets.get(range.location), byte_offsets.get(end))
+            {
+                ranges.push(*start_byte..*end_byte);
+            }
+            utf16_offset = end;
+        }
+        ranges
+    }
+
+    fn spelling_suggestions(&self, word: &str) -> Vec<String> {
+        use objc2_app_kit::NSSpellChecker;
+        use objc2_foundation::{NSRange, NSString};
+
+        let string = NSString::from_str(word);
+        NSSpellChecker::sharedSpellChecker()
+            .guessesForWordRange_inString_language_inSpellDocumentWithTag(
+                NSRange::new(0, string.length()),
+                &string,
+                None,
+                0,
+            )
+            .map(|guesses| guesses.iter().map(|guess| guess.to_string()).collect())
+            .unwrap_or_default()
+    }
+
+    fn learn_spelling(&self, word: &str) {
+        use objc2_app_kit::NSSpellChecker;
+        use objc2_foundation::NSString;
+
+        NSSpellChecker::sharedSpellChecker().learnWord(&NSString::from_str(word));
+    }
+
     fn open_url(&self, url: &str) {
         unsafe {
             let ns_url = NSURL::alloc(nil).initWithString_(ns_string(url));

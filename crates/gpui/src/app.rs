@@ -1911,6 +1911,26 @@ impl App {
         self.platform.open_url(url);
     }
 
+    /// Whether the platform has a spell checker.
+    pub fn has_spell_checker(&self) -> bool {
+        self.platform.has_spell_checker()
+    }
+
+    /// Byte ranges of the words in `text` that the platform's spell checker considers misspelled.
+    pub fn misspelled_ranges(&self, text: &str) -> Vec<std::ops::Range<usize>> {
+        self.platform.misspelled_ranges(text)
+    }
+
+    /// The platform spell checker's suggested corrections for `word`, best first.
+    pub fn spelling_suggestions(&self, word: &str) -> Vec<String> {
+        self.platform.spelling_suggestions(word)
+    }
+
+    /// Adds `word` to the user's spelling dictionary.
+    pub fn learn_spelling(&self, word: &str) {
+        self.platform.learn_spelling(word);
+    }
+
     /// Registers the given URL scheme (e.g. `zed` for `zed://` urls) to be
     /// opened by the current app.
     ///

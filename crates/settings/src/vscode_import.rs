@@ -300,6 +300,7 @@ impl VsCodeSettings {
             hover_popover_hiding_delay: self.read_u64("editor.hover.hidingDelay").map(Into::into),
             inline_code_actions: None,
             code_lens: None,
+            spell_check: None,
             jupyter: None,
             lsp_document_colors: None,
             lsp_document_links: self.read_bool("editor.links"),

@@ -238,6 +238,12 @@ pub struct EditorSettingsContent {
     /// Default: "on"
     pub code_lens: Option<CodeLens>,
 
+    /// Whether to underline misspelled words in comments and strings, using the system spell
+    /// checker (macOS only).
+    ///
+    /// Default: true
+    pub spell_check: Option<bool>,
+
     /// How to render LSP `textDocument/documentColor` colors in the editor.
     ///
     /// Default: [`DocumentColorsRenderMode::Inlay`]

@@ -45,6 +45,7 @@ pub(crate) struct TestPlatform {
     pub(crate) prompts: RefCell<TestPrompts>,
     screen_capture_sources: RefCell<Vec<TestScreenCaptureSource>>,
     pub opened_url: RefCell<Option<String>>,
+    pub(crate) misspelled_words: RefCell<Vec<(String, Vec<String>)>>,
     pub(crate) system_notifications: RefCell<TestSystemNotifications>,
     pub text_system: Arc<dyn PlatformTextSystem>,
     pub expect_restart:
@@ -224,6 +225,7 @@ impl TestPlatform {
             idle_sleep_prevention_fails: Cell::new(false),
             weak: weak.clone(),
             opened_url: Default::default(),
+            misspelled_words: Default::default(),
             system_notifications: Default::default(),
             text_system,
             headless_renderer_factory,
@@ -585,6 +587,43 @@ impl Platform for TestPlatform {
 
     fn open_url(&self, url: &str) {
         *self.opened_url.borrow_mut() = Some(url.to_string())
+    }
+
+    fn has_spell_checker(&self) -> bool {
+        !self.misspelled_words.borrow().is_empty()
+    }
+
+    fn misspelled_ranges(&self, text: &str) -> Vec<std::ops::Range<usize>> {
+        let misspelled_words = self.misspelled_words.borrow();
+        let mut ranges = Vec::new();
+        let mut word_start = None;
+        for (index, character) in text.char_indices().chain([(text.len(), ' ')]) {
+            if character.is_alphanumeric() || character == '\'' {
+                word_start.get_or_insert(index);
+            } else if let Some(start) = word_start.take()
+                && misspelled_words
+                    .iter()
+                    .any(|(word, _)| word == &text[start..index])
+            {
+                ranges.push(start..index);
+            }
+        }
+        ranges
+    }
+
+    fn spelling_suggestions(&self, word: &str) -> Vec<String> {
+        self.misspelled_words
+            .borrow()
+            .iter()
+            .find(|(misspelled, _)| misspelled == word)
+            .map(|(_, suggestions)| suggestions.clone())
+            .unwrap_or_default()
+    }
+
+    fn learn_spelling(&self, word: &str) {
+        self.misspelled_words
+            .borrow_mut()
+            .retain(|(misspelled, _)| misspelled != word);
     }
 
     fn on_open_urls(&self, _callback: Box<dyn FnMut(Vec<String>)>) {

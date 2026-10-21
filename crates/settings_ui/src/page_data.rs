@@ -10898,6 +10898,21 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
         files: USER,
     })];
 
+    let spell_check_item = [SettingsPageItem::SettingItem(SettingItem {
+        title: "Spell Check",
+        description: "Whether to underline misspelled words in comments and strings (macOS only).",
+        field: Box::new(SettingField {
+            organization_override: None,
+            json_path: Some("spell_check"),
+            pick: |settings_content| settings_content.editor.spell_check.as_ref(),
+            write: |settings_content, value, _| {
+                settings_content.editor.spell_check = value;
+            },
+        }),
+        metadata: None,
+        files: USER,
+    })];
+
     let lsp_document_colors_item = [SettingsPageItem::SettingItem(SettingItem {
         title: "LSP Document Colors",
         description: "How to render LSP color previews in the editor.",
@@ -10924,6 +10939,7 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
             completions_section(),
             inlay_hints_section(),
             code_lens_item,
+            spell_check_item,
             lsp_document_colors_item,
             tasks_section(),
             miscellaneous_section(),

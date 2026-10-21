@@ -439,6 +439,25 @@ pub trait Platform: 'static {
 
     fn open_url(&self, url: &str);
     fn on_open_urls(&self, callback: Box<dyn FnMut(Vec<String>)>);
+
+    /// Whether the platform has a spell checker, so callers can skip collecting text for it.
+    fn has_spell_checker(&self) -> bool {
+        false
+    }
+
+    /// Byte ranges of the words in `text` that the platform's spell checker considers misspelled.
+    /// Platforms without a spell checker report none.
+    fn misspelled_ranges(&self, _text: &str) -> Vec<std::ops::Range<usize>> {
+        Vec::new()
+    }
+
+    /// The platform spell checker's suggested corrections for `word`, best first.
+    fn spelling_suggestions(&self, _word: &str) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Adds `word` to the user's spelling dictionary.
+    fn learn_spelling(&self, _word: &str) {}
     fn register_url_scheme(&self, url: &str) -> Task<Result<()>>;
 
     fn prompt_for_paths(

@@ -46,6 +46,7 @@ mod rust_analyzer_ext;
 pub mod scroll;
 mod selections_collection;
 pub mod semantic_tokens;
+mod spell_check;
 mod split;
 pub mod split_editor_view;
 
@@ -1195,6 +1196,7 @@ pub struct Editor {
     selection_drag_state: SelectionDragState,
     colors: Option<LspColorData>,
     code_lens: Option<CodeLensState>,
+    spell_check: spell_check::SpellCheckState,
     post_scroll_update: Task<()>,
     refresh_colors_task: Task<()>,
     refresh_code_lens_task: Task<()>,
@@ -2359,6 +2361,10 @@ impl Editor {
         if let Some(project) = project.clone() {
             code_action_providers.push(Rc::new(project) as Rc<_>);
         }
+        let spell_check = spell_check::SpellCheckState::default();
+        if mode.is_full() {
+            code_action_providers.push(spell_check.code_action_provider(cx.weak_entity()));
+        }
 
         let mut editor = Self {
             focus_handle,
@@ -2554,6 +2560,7 @@ impl Editor {
             pull_diagnostics_task: Task::ready(()),
             colors: None,
             code_lens: None,
+            spell_check,
             refresh_colors_task: Task::ready(()),
             refresh_code_lens_task: Task::ready(()),
             use_document_folding_ranges: false,
@@ -10218,6 +10225,8 @@ impl Editor {
             }
             multi_buffer::Event::Reparsed(buffer_id) => {
                 self.refresh_runnables(Some(*buffer_id), window, cx);
+                // Comments and strings are found from highlights, which follow the syntax tree.
+                self.schedule_spell_check(cx);
                 self.refresh_selected_text_highlights(&self.display_snapshot(cx), true, window, cx);
                 self.colorize_brackets(true, cx);
                 jsx_tag_auto_close::refresh_enabled_in_any_buffer(self, multibuffer, cx);
@@ -10347,6 +10356,7 @@ impl Editor {
     }
 
     fn settings_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.schedule_spell_check(cx);
         let new_language_settings = self.fetch_applicable_language_settings(cx);
         let language_settings_changed = new_language_settings != self.applicable_language_settings;
         self.applicable_language_settings = new_language_settings;
@@ -11645,6 +11655,7 @@ impl Editor {
         self.colorize_brackets(false, cx);
         self.refresh_inlay_hints(InlayHintRefreshReason::NewLinesShown, cx);
         self.resolve_visible_code_lenses(cx);
+        self.schedule_spell_check(cx);
 
         if !self.buffer().read(cx).is_singleton() || self.needs_initial_data_update {
             self.needs_initial_data_update = false;

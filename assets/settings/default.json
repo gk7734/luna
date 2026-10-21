@@ -449,6 +449,9 @@
   // 3. Display code lenses in the code action menu.
   //      "code_lens": "menu",
   "code_lens": "on",
+  // Whether to underline misspelled words in comments and strings, using the system spell
+  // checker (macOS only). Suggestions and "Learn Spelling" are offered as code actions.
+  "spell_check": true,
   // What to do when go to definition yields no results.
   //
   // 1. Do nothing: `none`
