@@ -1804,6 +1804,11 @@
   // activate on first use.
   // `0` means no limit and activates all git repositories immediately.
   "file_scan_depth": 5,
+  // Whether to index projects in the background: scan and watch their files, track git
+  // status, and run language servers. When off, directories load only as you open them,
+  // file and git changes made outside Zed aren't picked up, and language servers stop.
+  // Toggle it with the `workspace: toggle indexing` action.
+  "indexing": true,
   // When to scan content of linked directories.
   // May take 2 values:
   //  1. Only scan symlinked directories when they've been expanded in the workspace:

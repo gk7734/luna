@@ -4929,8 +4929,20 @@ impl LspStore {
             .detach();
         cx.subscribe(&toolchain_store, Self::on_toolchain_store_event)
             .detach();
-        cx.observe_global::<SettingsStore>(Self::on_settings_changed)
-            .detach();
+        let mut indexing = WorktreeSettings::get_global(cx).indexing;
+        cx.observe_global::<SettingsStore>(move |this, cx| {
+            this.on_settings_changed(cx);
+            let new_indexing = WorktreeSettings::get_global(cx).indexing;
+            if mem::replace(&mut indexing, new_indexing) != new_indexing {
+                if new_indexing {
+                    this.restart_all_language_servers(cx);
+                } else {
+                    this.stop_all_language_servers(cx);
+                }
+            }
+        })
+        .detach();
+        let indexing = WorktreeSettings::get_global(cx).indexing;
         let binary_status_task = subscribe_to_binary_statuses(&languages, cx);
 
         let _maintain_workspace_config = {
@@ -4981,7 +4993,7 @@ impl LspStore {
                 buffer_pull_diagnostics_result_ids: HashMap::default(),
                 workspace_pull_diagnostics_result_ids: HashMap::default(),
                 restricted_worktrees_tasks: HashMap::default(),
-                auto_start_language_servers: true,
+                auto_start_language_servers: indexing,
                 language_server_start_overrides: HashMap::default(),
                 language_server_restart_tasks: Vec::new(),
                 watched_manifest_filenames: ManifestProvidersStore::global(cx)

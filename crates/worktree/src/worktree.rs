@@ -595,7 +595,7 @@ impl Worktree {
                     None,
                 );
                 if metadata.is_dir {
-                    if !scanning_enabled {
+                    if !scanning_enabled || !settings.indexing {
                         entry.kind = EntryKind::UnloadedDir;
                     }
                 } else {
@@ -1371,7 +1371,8 @@ impl LocalWorktree {
         let share_private_files = self.share_private_files;
         let next_entry_id = self.next_entry_id.clone();
         let fs = self.fs.clone();
-        let scanning_enabled = self.scanning_enabled;
+        // Restarted on settings changes, so toggling `indexing` pauses or resumes the scanner.
+        let scanning_enabled = self.scanning_enabled && self.settings.indexing;
         let force_defer_watch = self.force_defer_watch;
         let track_git_repositories = self.visible;
         let settings = self.settings.clone();

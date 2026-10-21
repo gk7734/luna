@@ -472,6 +472,8 @@ actions!(
         ToggleCenteredLayout,
         /// Toggles edit prediction feature globally for all files.
         ToggleEditPrediction,
+        /// Pauses or resumes background indexing: file scanning and watching, git status and language servers.
+        ToggleIndexing,
         /// Toggles the left dock.
         ToggleLeftDock,
         /// Toggles the right dock.

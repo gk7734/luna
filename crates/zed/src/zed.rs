@@ -1198,6 +1198,15 @@ fn register_actions(
         })
         .register_action({
             let fs = app_state.fs.clone();
+            move |_, _: &workspace::ToggleIndexing, _window, cx| {
+                let indexing = !project::WorktreeSettings::get_global(cx).indexing;
+                update_settings_file(fs.clone(), cx, move |settings, _| {
+                    settings.project.worktree.indexing = Some(indexing);
+                });
+            }
+        })
+        .register_action({
+            let fs = app_state.fs.clone();
             move |_, action: &zed_actions::IncreaseUiFontSize, _window, cx| {
                 if action.persist {
                     update_settings_file(fs.clone(), cx, move |settings, cx| {

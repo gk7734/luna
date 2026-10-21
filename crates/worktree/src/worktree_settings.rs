@@ -17,6 +17,7 @@ pub struct WorktreeSettings {
     pub parent_dir_scan_inclusions: PathMatcher,
     pub scan_symlinks: ScanSymlinksSetting,
     pub file_scan_depth: Option<u32>,
+    pub indexing: bool,
     pub private_files: PathMatcher,
     pub hidden_files: PathMatcher,
     pub read_only_files: PathMatcher,
@@ -77,6 +78,7 @@ impl Settings for WorktreeSettings {
             read_only_files: valid_path_matchers(read_only_files, "read_only_files"),
             scan_symlinks,
             file_scan_depth: worktree.file_scan_depth.filter(|depth| *depth > 0),
+            indexing: worktree.indexing.unwrap_or(true),
         }
     }
 }

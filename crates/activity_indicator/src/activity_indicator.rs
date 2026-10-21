@@ -11,8 +11,10 @@ use language::{
 };
 use project::{
     LanguageServerProgress, LspStoreEvent, ProgressToken, Project, ProjectEnvironmentEvent,
+    WorktreeSettings,
     git_store::{GitStoreEvent, Repository},
 };
+use settings::{Settings as _, SettingsStore};
 use smallvec::SmallVec;
 use std::{
     cmp::Reverse,
@@ -229,6 +231,9 @@ impl ActivityIndicator {
             )
             .detach();
 
+            cx.observe_global::<SettingsStore>(|_, cx| cx.notify())
+                .detach();
+
             let mut this = Self {
                 statuses: Vec::new(),
                 project: project.clone(),
@@ -387,6 +392,23 @@ impl ActivityIndicator {
             return Some(content);
         }
         self.deferred_scan_content(cx)
+            .or_else(|| Self::indexing_paused_content(cx))
+    }
+
+    fn indexing_paused_content(cx: &App) -> Option<Content> {
+        if WorktreeSettings::get_global(cx).indexing {
+            return None;
+        }
+        Some(Content {
+            icon: ActivityIcon::Icon(IconName::Info),
+            message: "Indexing paused".to_string(),
+            tooltip_message: Some(
+                "File scanning, file watching, git status and language servers are paused. Click to resume.".to_string(),
+            ),
+            on_click: Some(Arc::new(|_, window, cx| {
+                window.dispatch_action(Box::new(workspace::ToggleIndexing), cx);
+            })),
+        })
     }
 
     fn primary_content(&mut self, cx: &mut Context<Self>) -> Option<Content> {

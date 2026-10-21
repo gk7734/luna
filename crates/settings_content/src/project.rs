@@ -207,6 +207,13 @@ pub struct WorktreeSettingsContent {
     /// Default: 5
     pub file_scan_depth: Option<u32>,
 
+    /// Whether to index projects in the background: scan and watch their files, track git
+    /// status, and run language servers. When off, directories load only as you open them,
+    /// file and git changes made outside Zed aren't picked up, and language servers stop.
+    ///
+    /// Default: true
+    pub indexing: Option<bool>,
+
     /// Treat the files matching these globs as `.env` files.
     /// Default: ["**/.env*", "**/*.pem", "**/*.key", "**/*.cert", "**/*.crt", "**/secrets.yml"]
     pub private_files: Option<ExtendingVec<String>>,
