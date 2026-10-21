@@ -744,8 +744,12 @@ fn main() {
             zed::init_collab(&app_state, cx);
             collab_ui::init(&app_state, cx);
         }
+        // `collab_ui::init` sets up the title bar along with the collaboration UI.
         #[cfg(not(feature = "collab"))]
-        hide_account_actions(cx);
+        {
+            title_bar::init(cx);
+            hide_account_actions(cx);
+        }
         git_ui::init(cx);
         feedback::init(cx);
         markdown_preview::init(cx);

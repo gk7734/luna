@@ -6274,6 +6274,8 @@ mod tests {
             editor::init(cx);
             #[cfg(feature = "collab")]
             collab_ui::init(&app_state, cx);
+            #[cfg(not(feature = "collab"))]
+            title_bar::init(cx);
             git_ui::init(cx);
             project_panel::init(cx);
             outline_panel::init(cx);
