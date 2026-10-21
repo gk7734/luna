@@ -1,48 +1,64 @@
-# Zed
+# Luna
 
-[![Zed](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/zed-industries/zed/main/assets/badge/v0.json)](https://zed.dev)
-[![CI](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml/badge.svg)](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml)
+<img src="crates/zed/resources/luna/app-icon.svg" width="128" alt="Luna icon">
 
-Welcome to Zed, a high-performance, multiplayer code editor from the creators of [Atom](https://github.com/atom/atom) and [Tree-sitter](https://github.com/tree-sitter/tree-sitter).
+Luna is a lightweight code editor based on [Zed](https://github.com/zed-industries/zed).
+It drops the AI and collaboration features, trims memory and CPU use, and adds features familiar from JetBrains IDEs.
 
----
+## What's different
 
-### Installation
+### Lighter
 
-On macOS, Linux, and Windows you can [download Zed directly](https://zed.dev/download) or install Zed via your local package manager ([macOS](https://zed.dev/docs/installation#macos)/[Linux](https://zed.dev/docs/linux#installing-via-a-package-manager)/[Windows](https://zed.dev/docs/windows#package-managers)).
+- **No AI features**: the agent, edit predictions, Copilot and friends aren't part of the default build (only with the `ai` build option).
+- **No collaboration or zed.dev sign-in**: calls, channels and WebRTC are gone, and Luna doesn't connect to a server on startup (only with the `collab` build option).
+- **Telemetry and auto-update off**: update checks are disabled entirely, so Zed's update server can't replace Luna with Zed.
+- **Quiet when idle**: the cursor stops blinking without input, and the macOS display link pauses while nothing needs redrawing.
+- **Leaner file watching**: bursts of file changes no longer pile up updates, symlink targets are scanned once, and Git internals are left alone.
+- **Lighter language servers**
+  - rust-analyzer: no up-front analysis of the whole workspace, check-on-save covers only the saved package, and idle servers above 6 GB are restarted.
+  - TypeScript: no syntax-only second tsserver, no automatic type acquisition, and a lower memory cap.
+  - ESLint: runs as a plugin inside tsserver instead of as its own server.
+  - Tailwind: starts only in projects that depend on it.
+  - Prettier: stops after 10 minutes without formatting.
+- **Pausable indexing**: `workspace: toggle indexing` pauses file scanning and language servers, and background indexing waits on its own in Low Power Mode or under thermal pressure.
 
-Other platforms are not yet available:
+| Measured on macOS, Apple Silicon | Zed | Luna |
+|---|---|---|
+| Binary | 371 MB | 268 MB |
+| CPU while idle | 0.5% | 0.07% |
+| rust-analyzer peak memory (Zed's repository) | 10 GB | 4 GB |
+| Expo project (editor + language servers) | 1.36 GB | 0.94 GB |
 
-- Web ([tracking discussion](https://github.com/zed-industries/zed/discussions/26195))
+### JetBrains-like
 
-### Developing Zed
+- **Project symbol completions**: Luna's own symbol index completes names from the whole project, even before language servers are ready, and ranks what you picked before first. The index is cached, so a restart only re-reads changed files.
+- **Show usages**: cmd-click on a definition lists its usages in a picker, and usage counts appear above functions.
+- **TODO panel**: collects the project's TODO and FIXME comments.
+- **Spell checking**: misspelled words in comments and strings are underlined, with fixes and Learn Spelling under `cmd-.` (uses the macOS spell checker).
 
-- [Building Zed for macOS](./docs/src/development/macos.md)
-- [Building Zed for Linux](./docs/src/development/linux.md)
-- [Building Zed for Windows](./docs/src/development/windows.md)
+### Also
 
-### Contributing
+- **Open in Ghostty**: opens the current project, or the selected folder, in a new Ghostty window.
+- **Separate data**: Luna's settings and data don't mix with Zed's.
+  - Settings: `~/.config/luna`
+  - Data: `~/Library/Application Support/Luna`
+  - Logs: `~/Library/Logs/Luna`
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for ways you can contribute to Zed.
+## Building
 
-Also... we're hiring! Check out our [jobs](https://zed.dev/jobs) page for open roles.
+You need the Xcode command line tools, [rustup](https://rustup.rs) (the toolchain version comes from `rust-toolchain.toml`) and `cmake`.
 
-### Licensing
+```sh
+script/bundle-luna-mac --install   # builds Luna.app and installs it to ~/Applications
+```
 
-Zed source code is licensed primarily under GPL-3.0-or-later, with Apache-2.0 components where marked.
+For just the binary, `cargo build --release -p zed` produces `target/release/luna`.
+The `ai` and `collab` build options bring back Zed's AI and collaboration features.
 
-License information for third party dependencies must be correctly provided for CI to pass.
+Zed's build docs still apply: [macOS](./docs/src/development/macos.md) · [Linux](./docs/src/development/linux.md) · [Windows](./docs/src/development/windows.md)
 
-We use [`cargo-about`](https://github.com/EmbarkStudios/cargo-about) to automatically comply with open source licenses. If CI is failing, check the following:
+## License
 
-- Is it showing a `no license specified` error for a crate you've created? If so, add `publish = false` under `[package]` in your crate's Cargo.toml.
-- Is the error `failed to satisfy license requirements` for a dependency? If so, first determine what license the project has and whether this system is sufficient to comply with this license's requirements. If you're unsure, ask a lawyer. Once you've verified that this system is acceptable add the license's SPDX identifier to the `accepted` array in `script/licenses/zed-licenses.toml`.
-- Is `cargo-about` unable to find the license for a dependency? If so, add a clarification field at the end of `script/licenses/zed-licenses.toml`, as specified in the [cargo-about book](https://embarkstudios.github.io/cargo-about/cli/generate/config.html#crate-configuration).
-
-## Sponsorship
-
-Zed is developed by **Zed Industries, Inc.**, a for-profit company.
-
-If you’d like to financially support the project, you can do so via GitHub Sponsors.
-Sponsorships go directly to Zed Industries and are used as general company revenue.
-There are no perks or entitlements associated with sponsorship.
+Luna is a fork of [Zed](https://github.com/zed-industries/zed) by Zed Industries, Inc.
+Like Zed, its source code is licensed primarily under GPL-3.0-or-later, with Apache-2.0 components where marked.
+Third-party dependency licenses are tracked with [`cargo-about`](https://github.com/EmbarkStudios/cargo-about) and `script/licenses/zed-licenses.toml`.
