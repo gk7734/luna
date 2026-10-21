@@ -350,6 +350,11 @@ pub struct GlobalLspSettingsContent {
     /// Default: `20000`
     #[schemars(range(min = 1))]
     pub max_buffer_line_length: Option<u32>,
+    /// Restart a language server once it (with its child processes) uses more than this many
+    /// megabytes of memory and none of its documents changed for a few minutes. `0` disables this.
+    ///
+    /// Default: `6144`
+    pub restart_idle_server_above_mb: Option<u64>,
     /// Settings for language server notifications
     pub notifications: Option<LspNotificationSettingsContent>,
     /// Rules for rendering LSP semantic tokens.

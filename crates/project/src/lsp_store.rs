@@ -21,6 +21,7 @@ mod inlay_hints;
 pub mod json_language_server_ext;
 pub mod log_store;
 pub mod lsp_ext_command;
+mod memory_limit;
 pub mod rust_analyzer_ext;
 mod semantic_tokens;
 pub mod vue_language_server_ext;
@@ -343,6 +344,7 @@ pub struct LocalLspStore {
         >,
     >,
     buffer_snapshots: HashMap<BufferId, HashMap<LanguageServerId, Vec<LspBufferSnapshot>>>, // buffer_id -> server_id -> vec of snapshots
+    memory_limit: memory_limit::MemoryLimitState,
     _subscription: gpui::Subscription,
     _binary_status_task: Task<()>,
     lsp_tree: LanguageServerTree,
@@ -4976,6 +4978,7 @@ impl LspStore {
                 buffers_to_refresh_queue: VecDeque::new(),
                 _background_diagnostics_worker: Task::ready(()).shared(),
                 buffer_snapshots: Default::default(),
+                memory_limit: Default::default(),
                 prettier_store,
                 environment,
                 http_client,
@@ -9732,6 +9735,12 @@ impl LspStore {
                     },
                 )
                 .ok();
+            let now = cx.background_executor().now();
+            if let Some(local) = self.as_local_mut() {
+                local
+                    .memory_limit
+                    .document_changed(language_server.server_id(), now);
+            }
             self.pull_workspace_diagnostics(language_server.server_id());
         }
 
@@ -13771,6 +13780,7 @@ impl LspStore {
             });
         }
 
+        self.ensure_memory_limit_check(cx);
         cx.notify();
     }
 

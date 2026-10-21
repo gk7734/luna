@@ -2805,6 +2805,13 @@
     //
     // Default: 20000
     "max_buffer_line_length": 20000,
+    // Restart a language server once it (with its child processes) uses more than this many
+    // megabytes of memory and none of its documents changed for a few minutes. Servers like
+    // rust-analyzer keep growing as they analyze more code and don't release it.
+    // A value of 0 disables this.
+    //
+    // Default: 6144
+    "restart_idle_server_above_mb": 6144,
     "notifications": {
       // Timeout in milliseconds for automatically dismissing language server notifications.
       // Set to 0 to disable auto-dismiss.

@@ -137,6 +137,11 @@ pub struct GlobalLspSettings {
     ///
     /// Default: `20000`
     pub max_buffer_line_length: u32,
+    /// Restart a language server once it (with its child processes) uses more than this many
+    /// megabytes of memory and none of its documents changed for a few minutes. `0` disables this.
+    ///
+    /// Default: `6144`
+    pub restart_idle_server_above_mb: u64,
     pub notifications: LspNotificationSettings,
 
     /// Rules for highlighting semantic tokens.
@@ -149,6 +154,7 @@ impl Default for GlobalLspSettings {
             button: true,
             request_timeout: DEFAULT_LSP_REQUEST_TIMEOUT_SECS,
             max_buffer_line_length: 20_000,
+            restart_idle_server_above_mb: 6144,
             notifications: LspNotificationSettings::default(),
             semantic_token_rules: SemanticTokenRules::default(),
         }
@@ -752,6 +758,12 @@ impl Settings for ProjectSettings {
                     .as_ref()
                     .unwrap()
                     .max_buffer_line_length
+                    .unwrap(),
+                restart_idle_server_above_mb: content
+                    .global_lsp_settings
+                    .as_ref()
+                    .unwrap()
+                    .restart_idle_server_above_mb
                     .unwrap(),
                 notifications: LspNotificationSettings {
                     dismiss_timeout_ms: content
