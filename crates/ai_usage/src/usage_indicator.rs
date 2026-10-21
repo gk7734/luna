@@ -3,7 +3,7 @@ use gpui::{
     Action, Anchor, AnyElement, App, Context, Entity, IntoElement, ParentElement, Render, Styled,
     Subscription, Task, Window, px, relative,
 };
-use task::{SpawnInTerminal, TaskId};
+use task::{HideStrategy, SpawnInTerminal, TaskId};
 use ui::{ButtonLike, ContextMenu, PopoverMenu, Tooltip, prelude::*};
 use workspace::{
     HideStatusItem, StatusItemView, Toast, Workspace,
@@ -97,6 +97,7 @@ fn sign_in_in_terminal(
                     command_label: label,
                     use_new_terminal: true,
                     show_command: true,
+                    hide: HideStrategy::OnSuccess,
                     ..SpawnInTerminal::default()
                 },
                 window,
