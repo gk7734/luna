@@ -201,7 +201,7 @@ pub struct EditorSettingsContent {
     /// result always opens directly. Individual actions can override this with
     /// their `open_results_in` argument.
     ///
-    /// Default: multi_buffer
+    /// Default: picker
     pub lsp_results_location: Option<OpenResultsIn>,
 
     /// How to scroll the target into view when navigating to a definition or reference

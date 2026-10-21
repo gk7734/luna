@@ -468,9 +468,9 @@
   // result always opens directly. Individual actions can override this with
   // their `open_results_in` argument.
   //
-  // 1. Open the results in a multibuffer: `multi_buffer` (default)
-  // 2. Open the results in a filterable picker: `picker`
-  "lsp_results_location": "multi_buffer",
+  // 1. Open the results in a multibuffer: `multi_buffer`
+  // 2. Open the results in a filterable picker: `picker` (default)
+  "lsp_results_location": "picker",
   // Which level to use to filter out diagnostics displayed in the editor.
   //
   // Affects the editor rendering only, and does not interrupt
