@@ -2,7 +2,7 @@ use std::{
     ops::{ControlFlow, Range},
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context as _, Result, anyhow};
@@ -40,7 +40,15 @@ pub struct PrettierStore {
     prettiers_per_worktree: HashMap<WorktreeId, HashSet<Option<PathBuf>>>,
     prettier_ignores_per_worktree: HashMap<WorktreeId, HashSet<PathBuf>>,
     prettier_instances: HashMap<PathBuf, PrettierInstance>,
+    /// When each running prettier last formatted, keyed by its directory (`None` for the default
+    /// prettier), so idle ones can be stopped.
+    last_used: HashMap<Option<PathBuf>, Instant>,
+    idle_check: Option<Task<()>>,
 }
+
+/// Each prettier is a Node.js process holding over 100 MB, while formatting is occasional.
+const PRETTIER_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const PRETTIER_IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
 pub(crate) enum PrettierStoreEvent {
     LanguageServerRemoved(LanguageServerId),
@@ -70,6 +78,81 @@ impl PrettierStore {
             prettiers_per_worktree: HashMap::default(),
             prettier_ignores_per_worktree: HashMap::default(),
             prettier_instances: HashMap::default(),
+            last_used: HashMap::default(),
+            idle_check: None,
+        }
+    }
+
+    fn mark_used(&mut self, prettier_path: Option<PathBuf>, cx: &mut Context<Self>) {
+        self.last_used
+            .insert(prettier_path, cx.background_executor().now());
+        if self.idle_check.is_some() {
+            return;
+        }
+        // Only runs while some prettier is running, so an idle editor doesn't wake up for it.
+        self.idle_check = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(PRETTIER_IDLE_CHECK_INTERVAL)
+                    .await;
+                let any_running = this
+                    .update(cx, |this, cx| {
+                        this.stop_idle_prettiers(cx);
+                        let any_running = !this.last_used.is_empty();
+                        if !any_running {
+                            this.idle_check = None;
+                        }
+                        any_running
+                    })
+                    .unwrap_or(false);
+                if !any_running {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn stop_idle_prettiers(&mut self, cx: &mut Context<Self>) {
+        let now = cx.background_executor().now();
+        let idle_paths = self
+            .last_used
+            .iter()
+            .filter(|(_, last_used)| now.duration_since(**last_used) >= PRETTIER_IDLE_TIMEOUT)
+            .map(|(prettier_path, _)| prettier_path.clone())
+            .collect::<Vec<_>>();
+        for prettier_path in idle_paths {
+            self.last_used.remove(&prettier_path);
+            let instance = match &prettier_path {
+                Some(prettier_path) => self.prettier_instances.get_mut(prettier_path),
+                None => match &mut self.default_prettier.prettier {
+                    PrettierInstallation::Installed(instance) => Some(instance),
+                    PrettierInstallation::NotInstalled { .. } => None,
+                },
+            };
+            let Some(instance) = instance else {
+                continue;
+            };
+            // Restarting after idling isn't a failure, so it mustn't count toward the launch limit.
+            instance.attempt = 0;
+            let Some(prettier_task) = instance.prettier.take() else {
+                continue;
+            };
+            log::info!("Stopping idle prettier {prettier_path:?}");
+            // The process exits once the language server registration drops its handle too.
+            cx.spawn(async move |this, cx| {
+                let Some(server_id) = prettier_task
+                    .await
+                    .ok()
+                    .and_then(|prettier| prettier.server().map(|server| server.server_id()))
+                else {
+                    return;
+                };
+                this.update(cx, |_, cx| {
+                    cx.emit(PrettierStoreEvent::LanguageServerRemoved(server_id));
+                })
+                .ok();
+            })
+            .detach();
         }
     }
 
@@ -743,6 +826,11 @@ pub(super) async fn format_with_prettier(
 
     match prettier_task.await {
         Ok(prettier) => {
+            prettier_store
+                .update(cx, |prettier_store, cx| {
+                    prettier_store.mark_used(prettier_path.clone(), cx)
+                })
+                .ok();
             let buffer_path = buffer.update(cx, |buffer, cx| {
                 File::from_dyn(buffer.file()).map(|file| file.abs_path(cx))
             });
