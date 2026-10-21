@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Builds Luna.app from source so Luna can be opened from the Dock, Finder or Spotlight.
+# Usage: script/bundle-luna-mac [--install]   (--install copies it to ~/Applications)
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+target_dir="${CARGO_TARGET_DIR:-target}"
+version="$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/zed/Cargo.toml | head -n 1)"
+app="$target_dir/release/Luna.app"
+
+cargo build --release --package zed
+
+rm -rf "$app"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+cp "$target_dir/release/luna" "$app/Contents/MacOS/luna"
+cp crates/zed/resources/Document.icns "$app/Contents/Resources/Document.icns"
+
+iconset="$(mktemp -d)/Luna.iconset"
+mkdir -p "$iconset"
+for size in 16 32 128 256 512; do
+    sips -z "$size" "$size" crates/zed/resources/app-icon@2x.png --out "$iconset/icon_${size}x${size}.png" >/dev/null
+    double=$((size * 2))
+    sips -z "$double" "$double" crates/zed/resources/app-icon@2x.png --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil --convert icns "$iconset" --output "$app/Contents/Resources/Luna.icns"
+
+{
+    cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+<key>CFBundleName</key>
+<string>Luna</string>
+<key>CFBundleDisplayName</key>
+<string>Luna</string>
+<key>CFBundleIdentifier</key>
+<string>io.github.gk7734.luna</string>
+<key>CFBundleExecutable</key>
+<string>luna</string>
+<key>CFBundleIconFile</key>
+<string>Luna</string>
+<key>CFBundlePackageType</key>
+<string>APPL</string>
+<key>CFBundleShortVersionString</key>
+<string>${version}</string>
+<key>CFBundleVersion</key>
+<string>${version}</string>
+<key>LSApplicationCategoryType</key>
+<string>public.app-category.developer-tools</string>
+<key>LSMinimumSystemVersion</key>
+<string>10.15.7</string>
+<key>NSHighResolutionCapable</key>
+<true/>
+PLIST
+    cat crates/zed/resources/info/*.plist
+    cat <<PLIST
+</dict>
+</plist>
+PLIST
+} > "$app/Contents/Info.plist"
+plutil -lint "$app/Contents/Info.plist" >/dev/null
+
+# An ad-hoc signature keeps macOS from treating every rebuild as a new, unknown app.
+codesign --force --deep --sign - "$app"
+
+if [[ "${1:-}" == "--install" ]]; then
+    mkdir -p "$HOME/Applications"
+    rm -rf "$HOME/Applications/Luna.app"
+    cp -R "$app" "$HOME/Applications/Luna.app"
+    echo "Installed $HOME/Applications/Luna.app"
+else
+    echo "Built $app"
+fi
