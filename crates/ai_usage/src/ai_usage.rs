@@ -133,6 +133,10 @@ impl Account {
         }
     }
 
+    pub fn is_default(&self) -> bool {
+        self.id == Account::default_for(self.provider).id
+    }
+
     fn effective_config_dir(&self) -> PathBuf {
         self.config_dir
             .clone()
@@ -165,6 +169,9 @@ pub enum AccountUsage {
 struct StoredAccounts {
     accounts: Vec<Account>,
     active: HashMap<Provider, String>,
+    /// What each CLI's default account is signed in as, shown in place of "Default".
+    #[serde(default)]
+    default_names: HashMap<Provider, String>,
 }
 
 const STORED_ACCOUNTS_KEY: &str = "ai_usage_accounts";
@@ -175,6 +182,7 @@ const MENU_REFRESH_AGE: Duration = Duration::from_secs(60);
 pub struct AiUsage {
     added_accounts: Vec<Account>,
     active: HashMap<Provider, String>,
+    default_names: HashMap<Provider, String>,
     usage: HashMap<String, AccountUsage>,
     http_client: Arc<dyn HttpClient>,
     refresh_task: Option<Task<()>>,
@@ -208,6 +216,7 @@ pub fn init(cx: &mut App) {
         let this = AiUsage {
             added_accounts: stored.accounts,
             active: stored.active,
+            default_names: stored.default_names,
             usage: HashMap::default(),
             http_client,
             refresh_task: None,
@@ -255,7 +264,10 @@ impl AiUsage {
     /// The CLI's default account, when it has been used on this machine, followed by the added
     /// ones.
     pub fn accounts(&self, provider: Provider) -> Vec<Account> {
-        let default_account = Account::default_for(provider);
+        let mut default_account = Account::default_for(provider);
+        if let Some(name) = self.default_names.get(&provider) {
+            default_account.name = name.clone();
+        }
         let has_default = default_account.effective_config_dir().exists();
         has_default
             .then_some(default_account)
@@ -440,7 +452,7 @@ impl AiUsage {
                         })
                         .await;
                     if let Some(name) = signed_in_as {
-                        this.update(cx, |this, cx| this.complete_sign_in(&account.id, name, cx))
+                        this.update(cx, |this, cx| this.complete_sign_in(&account, name, cx))
                             .ok();
                         return;
                     }
@@ -455,17 +467,55 @@ impl AiUsage {
         });
     }
 
-    fn complete_sign_in(&mut self, account_id: &str, name: Option<String>, cx: &mut Context<Self>) {
+    /// Names the account after what it signed in as. Signing in as an account that's already in
+    /// the list leaves one entry for it, keeping the default one when it's either of them.
+    fn complete_sign_in(
+        &mut self,
+        account: &Account,
+        name: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         self.pending_sign_in = None;
-        if let Some(added) = self
+        let Some(name) = name else {
+            self.save(cx);
+            self.refresh(cx);
+            return;
+        };
+        let duplicate = self
+            .accounts(account.provider)
+            .into_iter()
+            .find(|other| other.id != account.id && other.name == name);
+        let kept = match duplicate {
+            Some(duplicate) if !account.is_default() => {
+                self.remove_account(&account.id, cx);
+                duplicate
+            }
+            Some(duplicate) => {
+                self.remove_account(&duplicate.id, cx);
+                account.clone()
+            }
+            None => account.clone(),
+        };
+        if kept.is_default() {
+            self.default_names.insert(kept.provider, name);
+        } else if let Some(added) = self
             .added_accounts
             .iter_mut()
-            .find(|added| added.id == account_id)
-            && let Some(name) = name
+            .find(|added| added.id == kept.id)
         {
             added.name = name;
         }
-        self.save(cx);
+        if kept.id != account.id && kept.provider == Provider::Claude {
+            let kept_id = kept.id.clone();
+            cx.background_spawn(async move {
+                if let Some(login) = claude_login::current_login().await? {
+                    claude_login::save_login(&kept_id, &login).await?;
+                }
+                anyhow::Ok(())
+            })
+            .detach_and_log_err(cx);
+        }
+        self.mark_active(&kept, cx);
         self.refresh(cx);
     }
 
@@ -491,7 +541,7 @@ impl AiUsage {
                 })
                 .await;
             if let Some(name) = signed_in_as {
-                return this.update(cx, |this, cx| this.complete_sign_in(&account.id, name, cx));
+                return this.update(cx, |this, cx| this.complete_sign_in(&account, name, cx));
             }
             if account.provider == Provider::Claude {
                 cx.background_spawn({
@@ -636,6 +686,7 @@ impl AiUsage {
         let stored = StoredAccounts {
             accounts: self.added_accounts.clone(),
             active: self.active.clone(),
+            default_names: self.default_names.clone(),
         };
         let Some(json) = serde_json::to_string(&stored).log_err() else {
             return;

@@ -292,7 +292,7 @@ fn build_menu(ai_usage: Entity<AiUsage>, window: &mut Window, cx: &mut App) -> E
                 let state = ai_usage.read(cx);
                 let active_id = state.active_account(provider).map(|account| account.id);
                 state.accounts(provider).into_iter().filter(move |account| {
-                    !account.id.ends_with("-default") && Some(&account.id) != active_id.as_ref()
+                    !account.is_default() && Some(&account.id) != active_id.as_ref()
                 })
             })
             .collect::<Vec<_>>();
