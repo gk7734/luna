@@ -3,10 +3,12 @@ use gpui::{
     Action, Anchor, AnyElement, App, Context, Entity, IntoElement, ParentElement, Render, Styled,
     Subscription, Window, px, relative,
 };
+use task::{SpawnInTerminal, TaskId};
 use ui::{ButtonLike, ContextMenu, PopoverMenu, Tooltip, prelude::*};
 use workspace::{
-    HideStatusItem, StatusItemView, Toast, Workspace, item::ItemHandle,
-    notifications::NotificationId,
+    HideStatusItem, StatusItemView, Toast, Workspace,
+    item::ItemHandle,
+    notifications::{NotificationId, NotifyTaskExt as _},
 };
 
 use crate::{
@@ -59,20 +61,44 @@ fn add_account(
     let Some(ai_usage) = AiUsage::global(cx) else {
         return;
     };
-    let account = ai_usage.update(cx, |ai_usage, cx| ai_usage.add_account(provider, cx));
-    window.dispatch_action(workspace::NewTerminal::default().boxed_clone(), cx);
-    struct AccountAdded;
-    workspace.show_toast(
-        Toast::new(
-            NotificationId::unique::<AccountAdded>(),
-            format!(
-                "Added {}. Run `{}` in the new terminal to sign in.",
-                account.name,
-                provider.sign_in_command()
-            ),
-        ),
-        cx,
-    );
+    let add_account = ai_usage.update(cx, |ai_usage, cx| ai_usage.add_account(provider, cx));
+    cx.spawn_in(window, async move |workspace, cx| {
+        let account = add_account.await?;
+        workspace.update_in(cx, |workspace, window, cx| {
+            let (command, args) = provider.sign_in_command();
+            let label = format!("Sign in to {}", account.name);
+            // The CLI starts signed out, so it goes straight to signing in, in the browser.
+            workspace
+                .spawn_in_terminal(
+                    SpawnInTerminal {
+                        id: TaskId(format!("ai-usage-sign-in-{}", account.id)),
+                        full_label: label.clone(),
+                        label: label.clone(),
+                        command: Some(command.to_string()),
+                        args: args.iter().map(|arg| arg.to_string()).collect(),
+                        command_label: label,
+                        use_new_terminal: true,
+                        show_command: true,
+                        ..SpawnInTerminal::default()
+                    },
+                    window,
+                    cx,
+                )
+                .detach();
+            struct AccountAdded;
+            workspace.show_toast(
+                Toast::new(
+                    NotificationId::unique::<AccountAdded>(),
+                    format!(
+                        "Sign in to {} in the terminal; its usage shows up once you're signed in.",
+                        account.name
+                    ),
+                ),
+                cx,
+            );
+        })
+    })
+    .detach_and_notify_err(workspace.weak_handle(), window, cx);
 }
 
 fn usage_color(used_percent: f32, cx: &App) -> gpui::Hsla {
@@ -229,10 +255,16 @@ fn render_account_row(
 
 fn build_menu(ai_usage: Entity<AiUsage>, window: &mut Window, cx: &mut App) -> Entity<ContextMenu> {
     ContextMenu::build(window, cx, move |mut menu, _, cx| {
+        // The active account can't be removed: its sign-in is the one the CLI uses.
         let removable_accounts = Provider::ALL
             .into_iter()
-            .flat_map(|provider| ai_usage.read(cx).accounts(provider))
-            .filter(|account| account.config_dir.is_some())
+            .flat_map(|provider| {
+                let state = ai_usage.read(cx);
+                let active_id = state.active_account(provider).map(|account| account.id);
+                state.accounts(provider).into_iter().filter(move |account| {
+                    !account.id.ends_with("-default") && Some(&account.id) != active_id.as_ref()
+                })
+            })
             .collect::<Vec<_>>();
         for provider in Provider::ALL {
             let state = ai_usage.read(cx);
