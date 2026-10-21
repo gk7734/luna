@@ -9,6 +9,12 @@ target_dir="${CARGO_TARGET_DIR:-target}"
 version="$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/zed/Cargo.toml | head -n 1)"
 app="$target_dir/release/Luna.app"
 
+# The terminal's libghostty-vt is built with Zig 0.15, which Homebrew installs keg-only.
+if [ -d /opt/homebrew/opt/zig@0.15/bin ]; then
+    export PATH="/opt/homebrew/opt/zig@0.15/bin:$PATH"
+fi
+command -v zig >/dev/null || { echo "Zig 0.15 is needed: brew install zig@0.15" >&2; exit 1; }
+
 cargo build --release --package zed
 
 rm -rf "$app"
