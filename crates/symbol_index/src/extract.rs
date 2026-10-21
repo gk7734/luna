@@ -54,20 +54,52 @@ pub struct IndexedSymbol {
     pub kind: SymbolKind,
 }
 
-/// Names shorter than this are rarely worth completing and would crowd out real matches.
-const MIN_SYMBOL_NAME_LEN: usize = 2;
+/// A TODO or FIXME comment, found the way JetBrains IDEs do by default: the keyword as a whole
+/// word in any case, inside a comment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TodoItem {
+    pub row: u32,
+    pub column: u32,
+    pub text: Arc<str>,
+}
 
-pub fn extract_symbols(language: &Language, text: &str) -> Vec<IndexedSymbol> {
+const TODO_KEYWORDS: [&str; 2] = ["todo", "fixme"];
+
+#[derive(Default)]
+pub struct FileIndex {
+    pub symbols: Vec<IndexedSymbol>,
+    pub todos: Vec<TodoItem>,
+}
+
+/// Parses the file once for both its outline symbols and its TODO comments.
+pub fn index_text(language: &Language, text: &str) -> FileIndex {
     let Some(grammar) = language.grammar() else {
-        return Vec::new();
-    };
-    let Some(outline_config) = grammar.outline_config.as_ref() else {
-        return Vec::new();
+        return FileIndex::default();
     };
     let Some(tree) = language::with_parser(|parser| {
         parser.set_language(&grammar.ts_language).ok()?;
         parser.parse(text, None)
     }) else {
+        return FileIndex::default();
+    };
+    FileIndex {
+        symbols: symbols_in_tree(language, &tree, text),
+        todos: todos_in_tree(&tree, text),
+    }
+}
+
+/// Names shorter than this are rarely worth completing and would crowd out real matches.
+const MIN_SYMBOL_NAME_LEN: usize = 2;
+
+fn symbols_in_tree(
+    language: &Language,
+    tree: &tree_sitter::Tree,
+    text: &str,
+) -> Vec<IndexedSymbol> {
+    let Some(outline_config) = language
+        .grammar()
+        .and_then(|grammar| grammar.outline_config.as_ref())
+    else {
         return Vec::new();
     };
 
@@ -108,6 +140,59 @@ pub fn extract_symbols(language: &Language, text: &str) -> Vec<IndexedSymbol> {
     symbols
 }
 
+/// Grammars name their comment nodes `comment`, `line_comment`, `block_comment` and so on.
+fn todos_in_tree(tree: &tree_sitter::Tree, text: &str) -> Vec<TodoItem> {
+    let mut todos = Vec::new();
+    let mut cursor = tree.walk();
+    loop {
+        let node = cursor.node();
+        let is_comment = node.kind().contains("comment");
+        if is_comment {
+            let start = node.start_position();
+            if let Some(comment_text) = text.get(node.byte_range()) {
+                for (line_index, line) in comment_text.lines().enumerate() {
+                    let line_start_column = if line_index == 0 { start.column } else { 0 };
+                    if let Some((column, todo_text)) = find_todo(line) {
+                        todos.push(TodoItem {
+                            row: (start.row + line_index) as u32,
+                            column: (line_start_column + column) as u32,
+                            text: todo_text.into(),
+                        });
+                    }
+                }
+            }
+        }
+        if !is_comment && cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return todos;
+            }
+        }
+    }
+}
+
+/// Returns the byte column of the keyword and the text from the keyword to the end of the line.
+fn find_todo(line: &str) -> Option<(usize, &str)> {
+    let lowercase_line = line.to_ascii_lowercase();
+    let is_word_character = |character: Option<char>| {
+        character.is_some_and(|character| character.is_alphanumeric() || character == '_')
+    };
+    for keyword in TODO_KEYWORDS {
+        for (column, _) in lowercase_line.match_indices(keyword) {
+            let before = lowercase_line[..column].chars().next_back();
+            let after = lowercase_line[column + keyword.len()..].chars().next();
+            if is_word_character(before) || is_word_character(after) {
+                continue;
+            }
+            let todo_text = line[column..].trim_end().trim_end_matches("*/").trim_end();
+            return Some((column, todo_text));
+        }
+    }
+    None
+}
+
 fn is_completable_name(name: &str) -> bool {
     name.chars().count() >= MIN_SYMBOL_NAME_LEN
         && name
@@ -123,7 +208,7 @@ mod tests {
     #[test]
     fn test_extract_rust_symbols() {
         let language = rust_lang();
-        let symbols = extract_symbols(
+        let symbols = index_text(
             &language,
             "
             struct Point { x: i32 }
@@ -132,7 +217,8 @@ mod tests {
             fn distance(a: Point) -> f32 { 0.0 }
             mod geometry { pub fn area() {} }
             ",
-        );
+        )
+        .symbols;
         let kinds = symbols
             .iter()
             .map(|symbol| (&*symbol.name, symbol.kind))
@@ -150,5 +236,32 @@ mod tests {
                 "missing {expected:?} in {kinds:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_extract_todo_comments() {
+        let language = rust_lang();
+        let text = "// TODO: handle errors\nfn todo_list() { todo!() }\n/* first line\n   fixme later */\nlet todos = 1; // not a todos match\n// Todo lowercase too\n";
+        let todos = index_text(&language, text).todos;
+        assert_eq!(
+            todos,
+            vec![
+                TodoItem {
+                    row: 0,
+                    column: 3,
+                    text: "TODO: handle errors".into(),
+                },
+                TodoItem {
+                    row: 3,
+                    column: 3,
+                    text: "fixme later".into(),
+                },
+                TodoItem {
+                    row: 5,
+                    column: 3,
+                    text: "Todo lowercase too".into(),
+                },
+            ]
+        );
     }
 }

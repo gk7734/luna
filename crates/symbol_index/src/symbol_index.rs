@@ -1,7 +1,7 @@
 mod extract;
 mod usage;
 
-pub use extract::{IndexedSymbol, SymbolKind};
+pub use extract::{IndexedSymbol, SymbolKind, TodoItem};
 pub use usage::{UsageScores, record_acceptance, usage_scores};
 
 use collections::{HashMap, HashSet};
@@ -66,12 +66,24 @@ pub struct SymbolIndex {
 
 struct ProjectIndex {
     project: WeakEntity<Project>,
-    files: HashMap<(WorktreeId, Arc<RelPath>), Arc<[IndexedSymbol]>>,
+    files: HashMap<(WorktreeId, Arc<RelPath>), IndexedFile>,
     generation: u64,
     name_table: Arc<Mutex<Option<(u64, Arc<NameTable>)>>>,
     jobs: mpsc::UnboundedSender<IndexJob>,
     _subscriptions: Vec<Subscription>,
     _indexer: Task<()>,
+}
+
+struct IndexedFile {
+    symbols: Arc<[IndexedSymbol]>,
+    todos: Arc<[TodoItem]>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FileTodos {
+    pub worktree_id: WorktreeId,
+    pub path: Arc<RelPath>,
+    pub todos: Arc<[TodoItem]>,
 }
 
 struct IndexJob {
@@ -189,6 +201,7 @@ impl SymbolIndex {
                         .files
                         .retain(|(file_worktree_id, _), _| file_worktree_id != worktree_id);
                     project_index.generation += 1;
+                    cx.notify();
                 }
             }
             project::Event::WorktreeUpdatedEntries(worktree_id, changes) => {
@@ -253,22 +266,35 @@ impl SymbolIndex {
         }
         if removed_any {
             project_index.generation += 1;
+            cx.notify();
         }
     }
 
-    fn apply_results(&mut self, project_id: EntityId, results: Vec<IndexResult>) {
+    fn apply_results(
+        &mut self,
+        project_id: EntityId,
+        results: Vec<IndexResult>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(project_index) = self.projects.get_mut(&project_id) else {
             return;
         };
         for result in results {
             let key = (result.worktree_id, result.path);
-            if result.symbols.is_empty() {
+            if result.file.symbols.is_empty() && result.file.todos.is_empty() {
                 project_index.files.remove(&key);
             } else {
-                project_index.files.insert(key, result.symbols.into());
+                project_index.files.insert(
+                    key,
+                    IndexedFile {
+                        symbols: result.file.symbols.into(),
+                        todos: result.file.todos.into(),
+                    },
+                );
             }
         }
         project_index.generation += 1;
+        cx.notify();
     }
 
     pub fn indexed_symbol_count(&self, project: &Entity<Project>) -> usize {
@@ -278,7 +304,7 @@ impl SymbolIndex {
                 project_index
                     .files
                     .values()
-                    .map(|symbols| symbols.len())
+                    .map(|file| file.symbols.len())
                     .sum()
             })
     }
@@ -287,7 +313,7 @@ impl SymbolIndex {
 struct IndexResult {
     worktree_id: WorktreeId,
     path: Arc<RelPath>,
-    symbols: Vec<IndexedSymbol>,
+    file: extract::FileIndex,
 }
 
 async fn run_indexer(
@@ -314,11 +340,11 @@ async fn run_indexer(
             .background_spawn(async move {
                 let mut results = Vec::with_capacity(batch.len());
                 for job in batch.into_values() {
-                    let symbols = index_file(&job.abs_path, &languages, fs.as_ref()).await;
+                    let file = index_file(&job.abs_path, &languages, fs.as_ref()).await;
                     results.push(IndexResult {
                         worktree_id: job.worktree_id,
                         path: job.path,
-                        symbols,
+                        file,
                     });
                 }
                 results
@@ -326,7 +352,7 @@ async fn run_indexer(
             .await;
 
         if this
-            .update(cx, |this, _| this.apply_results(project_id, results))
+            .update(cx, |this, cx| this.apply_results(project_id, results, cx))
             .is_err()
         {
             return;
@@ -338,21 +364,48 @@ async fn index_file(
     abs_path: &std::path::Path,
     languages: &Arc<LanguageRegistry>,
     fs: &dyn Fs,
-) -> Vec<IndexedSymbol> {
-    // Files without a known language, or whose language has no outline query, have no symbols.
+) -> extract::FileIndex {
+    // Without a known language there's no grammar to find symbols or comments with.
     let Ok(language) = languages.load_language_for_file_path(abs_path).await else {
-        return Vec::new();
+        return extract::FileIndex::default();
     };
-    if language
-        .grammar()
-        .is_none_or(|grammar| grammar.outline_config.is_none())
-    {
-        return Vec::new();
+    if language.grammar().is_none() {
+        return extract::FileIndex::default();
     }
     let Some(text) = fs.load(abs_path).await.log_err() else {
+        return extract::FileIndex::default();
+    };
+    extract::index_text(&language, &text)
+}
+
+/// The index entity, for observing updates.
+pub fn global_index(cx: &App) -> Option<Entity<SymbolIndex>> {
+    cx.try_global::<GlobalSymbolIndex>()
+        .map(|index| index.0.clone())
+}
+
+/// TODO comments in the project's indexed files, ordered by worktree and path.
+pub fn project_todos(project: &Entity<Project>, cx: &App) -> Vec<FileTodos> {
+    let Some(index) = cx.try_global::<GlobalSymbolIndex>() else {
         return Vec::new();
     };
-    extract::extract_symbols(&language, &text)
+    let Some(project_index) = index.0.read(cx).projects.get(&project.entity_id()) else {
+        return Vec::new();
+    };
+    let mut todos = project_index
+        .files
+        .iter()
+        .filter(|(_, file)| !file.todos.is_empty())
+        .map(|((worktree_id, path), file)| FileTodos {
+            worktree_id: *worktree_id,
+            path: path.clone(),
+            todos: file.todos.clone(),
+        })
+        .collect::<Vec<_>>();
+    todos.sort_by(|left, right| {
+        (left.worktree_id, &left.path).cmp(&(right.worktree_id, &right.path))
+    });
+    todos
 }
 
 /// Fuzzy-matches project symbols against `query`. The flag is true when results were capped at
@@ -386,7 +439,8 @@ pub fn candidates(
         project_index
             .files
             .iter()
-            .map(|((_, path), symbols)| (path.clone(), symbols.clone()))
+            .filter(|(_, file)| !file.symbols.is_empty())
+            .map(|((_, path), file)| (path.clone(), file.symbols.clone()))
             .collect::<Vec<_>>()
     };
     let query = query.to_string();

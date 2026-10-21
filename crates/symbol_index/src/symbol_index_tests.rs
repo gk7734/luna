@@ -112,3 +112,58 @@ async fn test_indexing_setting_pauses_index(cx: &mut TestAppContext) {
         vec!["paused_symbol"]
     );
 }
+
+#[gpui::test]
+async fn test_indexes_todo_comments(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/root"), json!({ "src": {} })).await;
+    let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+    project.read_with(cx, |project, _| project.languages().add(rust_lang()));
+    cx.run_until_parked();
+
+    fs.insert_file(
+        path!("/root/src/lib.rs"),
+        b"// TODO: split this up\nfn todo_free() {}\n".to_vec(),
+    )
+    .await;
+    cx.run_until_parked();
+
+    let todo_texts = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            project_todos(&project, cx)
+                .into_iter()
+                .flat_map(|file| {
+                    file.todos
+                        .iter()
+                        .map(|todo| {
+                            (
+                                file.path.as_unix_str().to_string(),
+                                todo.row,
+                                todo.text.to_string(),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(
+        todo_texts(cx),
+        vec![(
+            "src/lib.rs".to_string(),
+            0,
+            "TODO: split this up".to_string()
+        )]
+    );
+
+    fs.save(
+        Path::new(path!("/root/src/lib.rs")),
+        &"fn done() {}".into(),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    cx.run_until_parked();
+    assert!(todo_texts(cx).is_empty());
+}

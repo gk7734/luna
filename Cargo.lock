@@ -18593,6 +18593,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "todo_panel"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "editor",
+ "file_icons",
+ "gpui",
+ "language",
+ "menu",
+ "project",
+ "symbol_index",
+ "ui",
+ "util",
+ "workspace",
+]
+
+[[package]]
 name = "tokio"
 version = "1.52.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -22756,6 +22773,7 @@ dependencies = [
  "time",
  "time_format",
  "title_bar",
+ "todo_panel",
  "toolchain_selector",
  "tracing",
  "ui",
