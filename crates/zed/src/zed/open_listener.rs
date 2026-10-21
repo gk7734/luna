@@ -1,5 +1,6 @@
 use crate::handle_open_request;
 use crate::restore_or_create_workspace;
+#[cfg(feature = "ai")]
 use agent_ui::ExternalSourcePrompt;
 use anyhow::{Context as _, Result, anyhow};
 use cli::{CliRequest, CliResponse, CliResponseSink};
@@ -57,6 +58,7 @@ pub enum OpenRequestKind {
     Extension {
         extension_id: String,
     },
+    #[cfg(feature = "ai")]
     AgentPanel {
         external_source_prompt: Option<ExternalSourcePrompt>,
     },
@@ -91,6 +93,7 @@ impl std::fmt::Debug for OpenRequestKind {
                 .debug_struct("Extension")
                 .field("extension_id", extension_id)
                 .finish(),
+            #[cfg(feature = "ai")]
             Self::AgentPanel {
                 external_source_prompt,
             } => f
@@ -220,6 +223,12 @@ impl OpenRequest {
         }
     }
 
+    #[cfg(not(feature = "ai"))]
+    fn parse_agent_url(&mut self, _agent_path: &str) {
+        log::warn!("zed://agent links are not supported in builds without the `ai` feature");
+    }
+
+    #[cfg(feature = "ai")]
     fn parse_agent_url(&mut self, agent_path: &str) {
         // Format: "" or "?prompt=<text>".
         let agent_path = agent_path.strip_prefix('/').unwrap_or(agent_path);
@@ -1469,6 +1478,7 @@ mod tests {
         assert!(options.add_dirs_to_sidebar);
     }
 
+    #[cfg(feature = "ai")]
     #[gpui::test]
     fn test_parse_agent_url(cx: &mut TestAppContext) {
         let _app_state = init_test(cx);
@@ -1546,6 +1556,7 @@ mod tests {
         serializer.finish()
     }
 
+    #[cfg(feature = "ai")]
     #[gpui::test]
     fn test_parse_agent_url_with_prompt(cx: &mut TestAppContext) {
         let _app_state = init_test(cx);
@@ -1577,6 +1588,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "ai")]
     #[gpui::test]
     fn test_parse_agent_url_with_trailing_slash(cx: &mut TestAppContext) {
         let _app_state = init_test(cx);
@@ -1634,6 +1646,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "ai")]
     #[gpui::test]
     fn test_parse_agent_url_with_empty_prompt(cx: &mut TestAppContext) {
         let _app_state = init_test(cx);

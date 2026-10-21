@@ -15,11 +15,14 @@ const _: () = assert!(
      Forks: update APP_NAME in crates/paths/src/paths.rs when renaming the binary.",
 );
 
+#[cfg(feature = "ai")]
 use agent_ui::AgentPanel;
 use anyhow::{Context as _, Result};
 use clap::Parser;
 use cli::FORCE_CLI_MODE_ENV_VAR_NAME;
-use client::{Client, ProxySettings, RefreshLlmTokenListener, UserStore, parse_zed_link};
+#[cfg(feature = "ai")]
+use client::RefreshLlmTokenListener;
+use client::{Client, ProxySettings, UserStore, parse_zed_link};
 use collab_ui::channel_view::ChannelView;
 use collections::HashMap;
 use crashes::InitCrashHandler;
@@ -39,6 +42,7 @@ use gpui_tokio::Tokio;
 use language::LanguageRegistry;
 use onboarding::{FIRST_OPEN, show_onboarding_view};
 use project_panel::ProjectPanel;
+#[cfg(feature = "ai")]
 use prompt_store::PromptBuilder;
 use remote::RemoteConnectionOptions;
 use reqwest_client::ReqwestClient;
@@ -72,10 +76,12 @@ use workspace::{
     notifications::{NotificationId, NotifyResultExt},
     restore_multiworkspace,
 };
+#[cfg(feature = "ai")]
+use zed::edit_prediction_registry;
 use zed::{
     OpenListener, OpenRequest, RawOpenRequest, app_menus, build_window_options,
-    derive_paths_with_position, edit_prediction_registry, handle_cli_connection,
-    handle_keymap_file_changes, initialize_workspace, open_paths_with_positions,
+    derive_paths_with_position, handle_cli_connection, handle_keymap_file_changes,
+    initialize_workspace, open_paths_with_positions,
 };
 
 use crate::zed::{CrashHandler, OpenRequestKind, eager_load_active_theme_and_icon_theme};
@@ -495,6 +501,8 @@ fn main() {
             AppCommitSha::set_global(app_commit_sha, cx);
         }
         settings::init(cx);
+        #[cfg(not(feature = "ai"))]
+        force_disable_ai(cx);
         zlog_settings::init(cx);
         zed::watch_settings_files(fs.clone(), cx);
         handle_keymap_file_changes(user_keymap_file_rx, user_keymap_watcher, cx);
@@ -623,6 +631,7 @@ fn main() {
         })
         .detach();
 
+        #[cfg(feature = "ai")]
         let is_new_install = matches!(&installation_id, Some(IdType::New(_)));
 
         // We should rename these in the future to `first app open`, `first app open for release channel`, and `app open`
@@ -675,50 +684,12 @@ fn main() {
             cx.background_executor().clone(),
         );
         command_palette::init(cx);
-        let copilot_chat_configuration = copilot_chat::CopilotChatConfiguration {
-            enterprise_uri: settings::CopilotSettings::get_global(cx)
-                .enterprise_uri
-                .clone(),
-        };
-        let credentials_provider = zed_credentials_provider::global(cx);
-        copilot_chat::init(
-            app_state.client.http_client(),
-            credentials_provider,
-            copilot_chat_configuration,
-            cx,
-        );
-
-        copilot_ui::init(&app_state, cx);
         language_model::init(cx);
-        RefreshLlmTokenListener::register(
-            app_state.client.clone(),
-            app_state.user_store.clone(),
-            cx,
-        );
-        language_models::init(app_state.user_store.clone(), app_state.client.clone(), cx);
-        acp_tools::init(cx);
+        #[cfg(feature = "ai")]
+        init_ai(&app_state, is_new_install, cx);
         zed::telemetry_log::init(cx);
         zed::remote_debug::init(cx);
-        edit_prediction_ui::init(cx);
-        web_search::init(cx);
-        web_search_providers::init(app_state.client.clone(), app_state.user_store.clone(), cx);
         snippet_provider::init(cx);
-        edit_prediction_registry::init(app_state.client.clone(), app_state.user_store.clone(), cx);
-        let prompt_builder = PromptBuilder::load(app_state.fs.clone(), stdout_is_a_pty(), cx);
-        project::AgentRegistryStore::init_global(
-            cx,
-            app_state.fs.clone(),
-            app_state.client.http_client(),
-        );
-        agent_ui::init(
-            app_state.fs.clone(),
-            prompt_builder,
-            app_state.languages.clone(),
-            is_new_install,
-            false,
-            cx,
-        );
-        zed::watch_user_agents_md(app_state.fs.clone(), cx);
 
         repl::init(app_state.fs.clone(), cx);
         recent_projects::init(cx);
@@ -782,6 +753,7 @@ fn main() {
         settings_ui::init(cx);
         keymap_editor::init(cx);
         extensions_ui::init(cx);
+        #[cfg(feature = "ai")]
         edit_prediction::init(cx);
         inspector_ui::init(app_state.clone(), cx);
         json_schema_store::init(cx);
@@ -1035,6 +1007,7 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
                 })
                 .detach_and_log_err(cx);
             }
+            #[cfg(feature = "ai")]
             OpenRequestKind::AgentPanel {
                 external_source_prompt,
             } => {
@@ -1682,6 +1655,57 @@ pub(crate) static FORCE_CLI_MODE: LazyLock<bool> = LazyLock::new(|| {
     unsafe { std::env::remove_var(FORCE_CLI_MODE_ENV_VAR_NAME) };
     env_var
 });
+
+/// Builds without the `ai` feature still compile the thin AI crates that core UI depends on.
+/// `disable_ai` merges with OR, so a `true` default can't be turned off by user or project settings,
+/// which keeps the remaining AI surfaces (title bar, context menus, MCP, commit generation) hidden.
+#[cfg(not(feature = "ai"))]
+fn force_disable_ai(cx: &mut App) {
+    let defaults =
+        settings::default_settings().replace("\"disable_ai\": false", "\"disable_ai\": true");
+    SettingsStore::update_global(cx, |store, cx| store.set_default_settings(&defaults, cx))
+        .log_err();
+}
+
+#[cfg(feature = "ai")]
+fn init_ai(app_state: &Arc<AppState>, is_new_install: bool, cx: &mut App) {
+    let copilot_chat_configuration = copilot_chat::CopilotChatConfiguration {
+        enterprise_uri: settings::CopilotSettings::get_global(cx)
+            .enterprise_uri
+            .clone(),
+    };
+    let credentials_provider = zed_credentials_provider::global(cx);
+    copilot_chat::init(
+        app_state.client.http_client(),
+        credentials_provider,
+        copilot_chat_configuration,
+        cx,
+    );
+
+    copilot_ui::init(app_state, cx);
+    RefreshLlmTokenListener::register(app_state.client.clone(), app_state.user_store.clone(), cx);
+    language_models::init(app_state.user_store.clone(), app_state.client.clone(), cx);
+    acp_tools::init(cx);
+    edit_prediction_ui::init(cx);
+    web_search::init(cx);
+    web_search_providers::init(app_state.client.clone(), app_state.user_store.clone(), cx);
+    edit_prediction_registry::init(app_state.client.clone(), app_state.user_store.clone(), cx);
+    let prompt_builder = PromptBuilder::load(app_state.fs.clone(), stdout_is_a_pty(), cx);
+    project::AgentRegistryStore::init_global(
+        cx,
+        app_state.fs.clone(),
+        app_state.client.http_client(),
+    );
+    agent_ui::init(
+        app_state.fs.clone(),
+        prompt_builder,
+        app_state.languages.clone(),
+        is_new_install,
+        false,
+        cx,
+    );
+    zed::watch_user_agents_md(app_state.fs.clone(), cx);
+}
 
 fn stdout_is_a_pty() -> bool {
     !*FORCE_CLI_MODE && io::stdout().is_terminal()

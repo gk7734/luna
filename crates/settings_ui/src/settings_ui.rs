@@ -1,3 +1,5 @@
+// AI settings pages stay compiled without the `ai` feature but are unreachable; `--features ai` builds keep these lints.
+#![cfg_attr(not(feature = "ai"), allow(dead_code, unused_imports))]
 mod components;
 mod page_data;
 pub mod pages;

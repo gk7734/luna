@@ -1,4 +1,5 @@
 mod app_menus;
+#[cfg(feature = "ai")]
 pub mod edit_prediction_registry;
 #[cfg(target_os = "macos")]
 pub(crate) mod mac_only_instance;
@@ -15,7 +16,9 @@ pub mod visual_tests;
 #[cfg(target_os = "windows")]
 pub(crate) mod windows_only_instance;
 
+#[cfg(feature = "ai")]
 use agent_settings::{UserAgentsMdState, init_user_agents_md};
+#[cfg(feature = "ai")]
 use agent_ui::AgentDiffToolbar;
 use anyhow::Context as _;
 pub use app_menus::*;
@@ -77,7 +80,10 @@ use settings::{
     SettingsFile, SettingsStore, VIM_KEYMAP_PATH, initial_local_debug_tasks_content,
     initial_project_settings_content, initial_tasks_content, update_settings_file,
 };
+#[cfg(feature = "ai")]
 use sidebar::Sidebar;
+#[cfg(feature = "ai")]
+use workspace::Panel;
 #[cfg(debug_assertions)]
 use workspace::workspace_error::{ErrorAction, ErrorSeverity, WorkspaceError};
 
@@ -99,9 +105,9 @@ use vim_mode_setting::VimModeSetting;
 use workspace::notifications::{NotificationId, dismiss_app_notification, show_app_notification};
 
 use workspace::{
-    AppState, MultiWorkspace, NewFile, NewWindow, OpenLog, Panel, Toast, Workspace,
-    WorkspaceSettings, create_and_open_local_file,
-    notifications::simple_message_notification::MessageNotification, open_new,
+    AppState, MultiWorkspace, NewFile, NewWindow, OpenLog, Toast, Workspace, WorkspaceSettings,
+    create_and_open_local_file, notifications::simple_message_notification::MessageNotification,
+    open_new,
 };
 use workspace::{CloseProject, CloseWindow, RestoreBanner, with_active_or_new_workspace};
 use workspace::{Pane, notifications::DetachAndPromptErr};
@@ -501,6 +507,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
                 .unwrap_or(true)
         });
 
+        #[cfg(feature = "ai")]
         let window_handle = window.window_handle();
         let multi_workspace_handle = cx.entity();
         cx.subscribe_in(
@@ -516,6 +523,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
                 let active_workspace = this.workspace().clone();
                 let source_workspace = source_workspace.clone();
                 active_workspace.update(cx, |workspace, cx| {
+                    #[cfg(feature = "ai")]
                     if let Some(ref source) = source_workspace {
                         if let Some(panel) = workspace.panel::<agent_ui::AgentPanel>(cx) {
                             panel.update(cx, |panel, cx| {
@@ -535,6 +543,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         )
         .detach();
 
+        #[cfg(feature = "ai")]
         cx.defer(move |cx| {
             window_handle
                 .update(cx, |_, window, cx| {
@@ -584,7 +593,9 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             }
         }
 
+        #[cfg(feature = "ai")]
         let edit_prediction_menu_handle = PopoverMenuHandle::default();
+        #[cfg(feature = "ai")]
         let edit_prediction_ui = cx.new(|cx| {
             edit_prediction_ui::EditPredictionButton::new(
                 app_state.fs.clone(),
@@ -594,6 +605,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
                 cx,
             )
         });
+        #[cfg(feature = "ai")]
         workspace.register_action({
             move |_, _: &edit_prediction_ui::ToggleMenu, window, cx| {
                 edit_prediction_menu_handle.toggle(window, cx);
@@ -640,6 +652,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             status_bar.add_left_item(git_blame_status, window, cx);
             status_bar.add_left_item(merge_conflict_indicator, window, cx);
             status_bar.add_left_item(activity_indicator, window, cx);
+            #[cfg(feature = "ai")]
             status_bar.add_right_item(edit_prediction_ui, window, cx);
             status_bar.add_right_item(active_buffer_encoding, window, cx);
             status_bar.add_right_item(active_buffer_language, window, cx);
@@ -818,6 +831,25 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
     })
 }
 
+#[cfg(not(feature = "ai"))]
+fn ensure_agent_panel_for_workspace(
+    _workspace: &mut Workspace,
+    _source_workspace: Option<WeakEntity<Workspace>>,
+    _window: &mut Window,
+    _cx: &mut Context<Workspace>,
+) -> Task<anyhow::Result<()>> {
+    Task::ready(Ok(()))
+}
+
+#[cfg(not(feature = "ai"))]
+async fn initialize_agent_panel(
+    _workspace_handle: WeakEntity<Workspace>,
+    _cx: AsyncWindowContext,
+) -> anyhow::Result<()> {
+    Ok(())
+}
+
+#[cfg(feature = "ai")]
 fn setup_or_teardown_ai_panel<P: Panel>(
     workspace: &mut Workspace,
     window: &mut Window,
@@ -854,6 +886,7 @@ fn setup_or_teardown_ai_panel<P: Panel>(
     }
 }
 
+#[cfg(feature = "ai")]
 fn ensure_agent_panel_for_workspace(
     workspace: &mut Workspace,
     source_workspace: Option<WeakEntity<Workspace>>,
@@ -878,6 +911,7 @@ fn ensure_agent_panel_for_workspace(
     })
 }
 
+#[cfg(feature = "ai")]
 async fn initialize_agent_panel(
     workspace_handle: WeakEntity<Workspace>,
     mut cx: AsyncWindowContext,
@@ -1413,6 +1447,7 @@ fn register_actions(
         });
     }
 
+    #[cfg(feature = "ai")]
     workspace.register_action(sidebar::dump_workspace_info);
 
     #[cfg(debug_assertions)]
@@ -1491,8 +1526,11 @@ fn initialize_pane(
             toolbar.add_item(lsp_log_item, window, cx);
             let dap_log_item = cx.new(|_| debugger_tools::DapLogToolbarItemView::new());
             toolbar.add_item(dap_log_item, window, cx);
-            let acp_tools_item = cx.new(|_| acp_tools::AcpToolsToolbarItemView::new());
-            toolbar.add_item(acp_tools_item, window, cx);
+            #[cfg(feature = "ai")]
+            {
+                let acp_tools_item = cx.new(|_| acp_tools::AcpToolsToolbarItemView::new());
+                toolbar.add_item(acp_tools_item, window, cx);
+            }
             let telemetry_log_item =
                 cx.new(|cx| telemetry_log::TelemetryLogToolbarItemView::new(window, cx));
             toolbar.add_item(telemetry_log_item, window, cx);
@@ -1516,8 +1554,11 @@ fn initialize_pane(
             toolbar.add_item(solo_diff_git_toolbar, window, cx);
             let commit_view_toolbar = cx.new(|_| CommitViewToolbar::new());
             toolbar.add_item(commit_view_toolbar, window, cx);
-            let agent_diff_toolbar = cx.new(AgentDiffToolbar::new);
-            toolbar.add_item(agent_diff_toolbar, window, cx);
+            #[cfg(feature = "ai")]
+            {
+                let agent_diff_toolbar = cx.new(AgentDiffToolbar::new);
+                toolbar.add_item(agent_diff_toolbar, window, cx);
+            }
             let basedpyright_banner = cx.new(|cx| BasedPyrightBanner::new(workspace, cx));
             toolbar.add_item(basedpyright_banner, window, cx);
             let image_view_toolbar = cx.new(|_| image_viewer::ImageViewToolbarControls::new());
@@ -2087,6 +2128,7 @@ fn init_reduce_motion(cx: &mut App) {
 ///
 /// The file itself is loaded into [`agent_settings::UserAgentsMd`] for inclusion
 /// in prompts.
+#[cfg(feature = "ai")]
 pub fn watch_user_agents_md(fs: Arc<dyn fs::Fs>, cx: &mut App) {
     struct UserAgentsMdParseError;
     let notification_id = NotificationId::unique::<UserAgentsMdParseError>();
@@ -2352,32 +2394,45 @@ pub fn load_default_keymap(cx: &mut App) {
     }
 
     cx.bind_keys(filter_disabled_ai_bindings(
-        KeymapFile::load_asset(DEFAULT_KEYMAP_PATH, Some(KeybindSource::Default), cx).unwrap(),
+        load_builtin_keymap(DEFAULT_KEYMAP_PATH, KeybindSource::Default, cx),
         cx,
     ));
 
     if let Some(asset_path) = base_keymap.asset_path() {
         cx.bind_keys(filter_disabled_ai_bindings(
-            KeymapFile::load_asset(asset_path, Some(KeybindSource::Base), cx).unwrap(),
+            load_builtin_keymap(asset_path, KeybindSource::Base, cx),
             cx,
         ));
     }
 
     if VimModeSetting::get_global(cx).0 || vim_mode_setting::HelixModeSetting::get_global(cx).0 {
         cx.bind_keys(filter_disabled_ai_bindings(
-            KeymapFile::load_asset(VIM_KEYMAP_PATH, Some(KeybindSource::Vim), cx).unwrap(),
+            load_builtin_keymap(VIM_KEYMAP_PATH, KeybindSource::Vim, cx),
             cx,
         ));
     }
 
-    cx.bind_keys(
-        KeymapFile::load_asset(
-            SPECIFIC_OVERRIDES_KEYMAP_PATH,
-            Some(KeybindSource::Default),
-            cx,
-        )
-        .unwrap(),
-    );
+    cx.bind_keys(load_builtin_keymap(
+        SPECIFIC_OVERRIDES_KEYMAP_PATH,
+        KeybindSource::Default,
+        cx,
+    ));
+}
+
+#[cfg(feature = "ai")]
+fn load_builtin_keymap(asset_path: &str, source: KeybindSource, cx: &App) -> Vec<KeyBinding> {
+    KeymapFile::load_asset(asset_path, Some(source), cx).unwrap()
+}
+
+/// Built-in keymaps bind actions from AI crates that aren't compiled without the `ai` feature,
+/// so those bindings fail to load and are skipped instead of panicking.
+#[cfg(not(feature = "ai"))]
+fn load_builtin_keymap(asset_path: &str, source: KeybindSource, cx: &App) -> Vec<KeyBinding> {
+    let mut bindings = KeymapFile::load_asset_allow_partial_failure(asset_path, cx).unwrap();
+    for binding in &mut bindings {
+        binding.set_meta(source.meta());
+    }
+    bindings
 }
 
 /// Namespaces of actions that are part of an AI feature. When the user opts out
@@ -2388,6 +2443,7 @@ pub fn load_default_keymap(cx: &mut App) {
 const AI_ACTION_NAMESPACES: &[&str] = &[
     "acp::",
     "agent::",
+    "agents_sidebar::",
     "assistant::",
     "edit_prediction::",
     "inline_assistant::",
