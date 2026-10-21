@@ -2,7 +2,7 @@ use language::Language;
 use std::sync::Arc;
 use tree_sitter::{QueryCursor, StreamingIterator as _};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SymbolKind {
     Function,
     Type,
@@ -48,7 +48,7 @@ impl SymbolKind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct IndexedSymbol {
     pub name: Arc<str>,
     pub kind: SymbolKind,
@@ -56,7 +56,7 @@ pub struct IndexedSymbol {
 
 /// A TODO or FIXME comment, found the way JetBrains IDEs do by default: the keyword as a whole
 /// word in any case, inside a comment.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TodoItem {
     pub row: u32,
     pub column: u32,
@@ -65,7 +65,7 @@ pub struct TodoItem {
 
 const TODO_KEYWORDS: [&str; 2] = ["todo", "fixme"];
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct FileIndex {
     pub symbols: Vec<IndexedSymbol>,
     pub todos: Vec<TodoItem>,

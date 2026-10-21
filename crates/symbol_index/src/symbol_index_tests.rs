@@ -11,6 +11,8 @@ fn init_test(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let settings_store = SettingsStore::test(cx);
         cx.set_global(settings_store);
+        // Tests share a process-wide database otherwise, and their cached files would mix.
+        cx.set_global(db::AppDatabase::test_new());
         release_channel::init(semver::Version::new(0, 0, 0), cx);
         init(cx);
     });
@@ -166,4 +168,73 @@ async fn test_indexes_todo_comments(cx: &mut TestAppContext) {
     .unwrap();
     cx.run_until_parked();
     assert!(todo_texts(cx).is_empty());
+}
+
+#[gpui::test]
+async fn test_unchanged_files_reuse_cached_results(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(path!("/root"), json!({ "src": {} })).await;
+    let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+    project.read_with(cx, |project, _| project.languages().add(rust_lang()));
+    cx.run_until_parked();
+
+    fs.insert_file(path!("/root/src/lib.rs"), b"fn parsed_symbol() {}".to_vec())
+        .await;
+    cx.run_until_parked();
+    assert_eq!(
+        candidate_names(&project, "parsed", cx).await,
+        vec!["parsed_symbol"]
+    );
+
+    // Swapping the cached result shows the next pass reads it instead of the unchanged file.
+    let db = cx.update(|cx| cache::SymbolIndexDb::global(cx));
+    let cache_key = path!("/root/src/lib.rs").to_string();
+    let (mtime, size, _) = db
+        .cached_file(cache_key.clone())
+        .unwrap()
+        .expect("indexing caches the file");
+    let cached_file = extract::FileIndex {
+        symbols: vec![IndexedSymbol {
+            name: "cached_symbol".into(),
+            kind: SymbolKind::Function,
+        }],
+        todos: Vec::new(),
+    };
+    db.save_files(vec![cache::CachedFileRow {
+        path: cache_key,
+        mtime,
+        size,
+        contents: serde_json::to_vec(&cached_file).unwrap(),
+    }])
+    .await
+    .unwrap();
+    for indexing in [false, true] {
+        cx.update(|cx| {
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.project.worktree.indexing = Some(indexing);
+                });
+            });
+        });
+        cx.run_until_parked();
+    }
+    assert_eq!(
+        candidate_names(&project, "cached", cx).await,
+        vec!["cached_symbol"]
+    );
+
+    // A changed file is parsed again.
+    fs.save(
+        Path::new(path!("/root/src/lib.rs")),
+        &"fn edited_symbol() {}".into(),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        candidate_names(&project, "edited", cx).await,
+        vec!["edited_symbol"]
+    );
 }

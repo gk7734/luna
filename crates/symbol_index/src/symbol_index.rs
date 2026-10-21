@@ -1,3 +1,4 @@
+mod cache;
 mod extract;
 mod usage;
 
@@ -62,6 +63,8 @@ impl Global for GlobalSymbolIndex {}
 #[derive(Default)]
 pub struct SymbolIndex {
     projects: HashMap<EntityId, ProjectIndex>,
+    /// Names like `new` repeat across thousands of files; they're stored once.
+    interned_names: HashSet<Arc<str>>,
 }
 
 struct ProjectIndex {
@@ -90,6 +93,9 @@ struct IndexJob {
     worktree_id: WorktreeId,
     path: Arc<RelPath>,
     abs_path: PathBuf,
+    /// Nanoseconds since the epoch, when known, to reuse the cached result for the same file.
+    mtime: Option<i64>,
+    size: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -235,6 +241,8 @@ impl SymbolIndex {
             return;
         };
         let snapshot = worktree.read(cx).snapshot();
+        // Events name removed files, whose cached results can go; a full pass only names files.
+        let is_update = paths.is_some();
         let paths = paths.unwrap_or_else(|| {
             snapshot
                 .files(false, 0)
@@ -242,27 +250,44 @@ impl SymbolIndex {
                 .collect()
         });
         let mut removed_any = false;
+        let mut uncached_paths = Vec::new();
         for path in paths {
-            let indexable = snapshot.entry_for_path(&path).is_some_and(|entry| {
+            let indexable_entry = snapshot.entry_for_path(&path).filter(|entry| {
                 entry.is_file()
                     && !entry.is_ignored
                     && !entry.is_external
                     && !entry.is_private
                     && entry.size <= MAX_INDEXED_FILE_SIZE
             });
-            if indexable {
+            if let Some(entry) = indexable_entry {
                 let abs_path = snapshot.absolutize(&path);
+                let mtime = entry
+                    .mtime
+                    .and_then(|mtime| mtime.to_seconds_and_nanos_for_persistence())
+                    .map(|(seconds, nanos)| seconds as i64 * 1_000_000_000 + nanos as i64);
                 project_index
                     .jobs
                     .unbounded_send(IndexJob {
                         worktree_id,
                         path,
                         abs_path,
+                        mtime,
+                        size: entry.size,
                     })
                     .log_err();
-            } else if project_index.files.remove(&(worktree_id, path)).is_some() {
-                removed_any = true;
+            } else {
+                if is_update {
+                    uncached_paths.push(snapshot.absolutize(&path).to_string_lossy().into_owned());
+                }
+                if project_index.files.remove(&(worktree_id, path)).is_some() {
+                    removed_any = true;
+                }
             }
+        }
+        if !uncached_paths.is_empty() {
+            let db = cache::SymbolIndexDb::global(cx);
+            cx.background_spawn(async move { db.delete_files(uncached_paths).await.log_err() })
+                .detach();
         }
         if removed_any {
             project_index.generation += 1;
@@ -284,10 +309,19 @@ impl SymbolIndex {
             if result.file.symbols.is_empty() && result.file.todos.is_empty() {
                 project_index.files.remove(&key);
             } else {
+                let symbols = result
+                    .file
+                    .symbols
+                    .into_iter()
+                    .map(|symbol| IndexedSymbol {
+                        name: intern(&mut self.interned_names, symbol.name),
+                        kind: symbol.kind,
+                    })
+                    .collect();
                 project_index.files.insert(
                     key,
                     IndexedFile {
-                        symbols: result.file.symbols.into(),
+                        symbols,
                         todos: result.file.todos.into(),
                     },
                 );
@@ -324,6 +358,7 @@ async fn run_indexer(
     mut jobs: mpsc::UnboundedReceiver<IndexJob>,
     cx: &mut gpui::AsyncApp,
 ) {
+    let db = cx.update(|cx| cache::SymbolIndexDb::global(cx));
     while let Some(first_job) = jobs.next().await {
         // Bursts of file events queue the same file repeatedly; index each one once per batch.
         let mut batch = HashMap::default();
@@ -336,17 +371,45 @@ async fn run_indexer(
 
         let languages = languages.clone();
         let fs = fs.clone();
+        let db = db.clone();
         let results = cx
             .background_spawn(async move {
                 let mut results = Vec::with_capacity(batch.len());
+                let mut new_rows = Vec::new();
                 for job in batch.into_values() {
-                    let file = index_file(&job.abs_path, &languages, fs.as_ref()).await;
+                    let cache_key = job.abs_path.to_string_lossy().into_owned();
+                    let cached = job.mtime.and_then(|mtime| {
+                        let (cached_mtime, cached_size, contents) =
+                            db.cached_file(cache_key.clone()).log_err().flatten()?;
+                        if cached_mtime != mtime || cached_size != job.size as i64 {
+                            return None;
+                        }
+                        serde_json::from_slice::<extract::FileIndex>(&contents).log_err()
+                    });
+                    let file = match cached {
+                        Some(file) => file,
+                        None => {
+                            let file = index_file(&job.abs_path, &languages, fs.as_ref()).await;
+                            if let Some(mtime) = job.mtime
+                                && let Some(contents) = serde_json::to_vec(&file).log_err()
+                            {
+                                new_rows.push(cache::CachedFileRow {
+                                    path: cache_key,
+                                    mtime,
+                                    size: job.size as i64,
+                                    contents,
+                                });
+                            }
+                            file
+                        }
+                    };
                     results.push(IndexResult {
                         worktree_id: job.worktree_id,
                         path: job.path,
                         file,
                     });
                 }
+                db.save_files(new_rows).await.log_err();
                 results
             })
             .await;
@@ -376,6 +439,14 @@ async fn index_file(
         return extract::FileIndex::default();
     };
     extract::index_text(&language, &text)
+}
+
+fn intern(interned_names: &mut HashSet<Arc<str>>, name: Arc<str>) -> Arc<str> {
+    if let Some(interned) = interned_names.get(&name) {
+        return interned.clone();
+    }
+    interned_names.insert(name.clone());
+    name
 }
 
 /// The index entity, for observing updates.
