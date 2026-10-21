@@ -161,10 +161,32 @@ fn start_memory_usage_logging(
                     last_logged_at = Instant::now();
                 }
             }
+            release_free_memory_to_os();
             executor.timer(MEMORY_USAGE_POLL_INTERVAL).await;
         }
     })
     .detach();
+}
+
+/// The system allocators keep freed blocks cached instead of returning them to the OS, so after a
+/// burst (e.g. a flood of filesystem events) hundreds of MB stayed resident with nothing allocated
+/// in them. mimalloc didn't help: it lowered nothing and inflated RSS.
+fn release_free_memory_to_os() {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" {
+            fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+        }
+        // A null zone means all zones; a goal of 0 releases as much as possible.
+        unsafe { malloc_zone_pressure_relief(std::ptr::null_mut(), 0) };
+    }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> std::ffi::c_int;
+        }
+        unsafe { malloc_trim(0) };
+    }
 }
 
 fn log_worktree_diagnostics(
