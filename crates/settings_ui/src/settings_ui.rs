@@ -606,6 +606,7 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<settings::IndentGuideBackgroundColoring>(render_dropdown)
         .add_basic_renderer::<settings::ShowDiagnostics>(render_dropdown)
         .add_basic_renderer::<settings::WordsCompletionMode>(render_dropdown)
+        .add_basic_renderer::<settings::ProjectSymbolsCompletionMode>(render_dropdown)
         .add_basic_renderer::<settings::LspInsertMode>(render_dropdown)
         .add_basic_renderer::<settings::CompletionDetailAlignment>(render_dropdown)
         .add_basic_renderer::<settings::CompletionMenuItemKind>(render_dropdown)
@@ -6935,6 +6936,7 @@ pub mod test {
         });
     }
 
+    #[cfg(feature = "ai")]
     #[gpui::test]
     async fn test_skills_page_scope_switch_updates_displayed_skills(cx: &mut gpui::TestAppContext) {
         use agent_skills::{
@@ -7110,6 +7112,7 @@ pub mod test {
         });
     }
 
+    #[cfg(feature = "ai")]
     #[gpui::test]
     async fn test_open_skill_creator_navigates_to_sub_page(cx: &mut gpui::TestAppContext) {
         use project::Project;
@@ -7198,6 +7201,7 @@ pub mod test {
         });
     }
 
+    #[cfg(feature = "ai")]
     #[gpui::test]
     async fn test_open_skill_creator_action_opens_settings_window_at_sub_page(
         cx: &mut gpui::TestAppContext,
