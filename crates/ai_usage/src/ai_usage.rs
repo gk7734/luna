@@ -100,7 +100,8 @@ impl Provider {
     /// What to run in a terminal to sign in to a new account.
     pub fn sign_in_command(self) -> (&'static str, &'static [&'static str]) {
         match self {
-            Provider::Claude => ("claude", &[]),
+            // Plain `claude` opens a chat when it's signed out, once its onboarding is done.
+            Provider::Claude => ("claude", &["auth", "login", "--claudeai"]),
             Provider::Codex => ("codex", &["login"]),
         }
     }
