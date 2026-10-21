@@ -623,7 +623,6 @@ dependencies = [
  "log",
  "paths",
  "project",
- "security-framework",
  "serde",
  "serde_json",
  "task",

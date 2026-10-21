@@ -334,8 +334,8 @@ impl AiUsage {
                 async move {
                     match account.provider {
                         Provider::Claude => {
-                            if let Some(login) = claude_login::current_login()? {
-                                claude_login::save_login(&previous.id, &login)?;
+                            if let Some(login) = claude_login::current_login().await? {
+                                claude_login::save_login(&previous.id, &login).await?;
                             }
                             claude_login::install_login(None).await
                         }
@@ -369,7 +369,7 @@ impl AiUsage {
                 let signed_in_as = cx
                     .background_spawn({
                         let account = account.clone();
-                        async move { signed_in_name(&account) }
+                        async move { signed_in_name(&account).await }
                     })
                     .await;
                 let Some(name) = signed_in_as else {
@@ -409,7 +409,7 @@ impl AiUsage {
         if let Some(removed) = removed
             && removed.provider == Provider::Claude
         {
-            cx.background_spawn(async move { claude_login::delete_saved_login(&removed.id) })
+            cx.background_spawn(async move { claude_login::delete_saved_login(&removed.id).await })
                 .detach_and_log_err(cx);
         }
     }
@@ -517,9 +517,9 @@ async fn fetch_usage(
             // Only the active account's sign-in is in Claude Code's keychain item; the others
             // are in the copies saved when switching away from them.
             let login = if is_active {
-                claude_login::current_login()?
+                claude_login::current_login().await?
             } else {
-                claude_login::saved_login(&account.id)?
+                claude_login::saved_login(&account.id).await?
             };
             let login = login.ok_or_else(|| anyhow!("not signed in"))?;
             claude::fetch_usage(&login.credentials, http_client).await
@@ -531,26 +531,30 @@ async fn fetch_usage(
 /// Saves the outgoing account's sign-in, which Claude Code may have renewed since it was
 /// installed, before installing the incoming one's.
 async fn switch_claude_login(previous: Option<&Account>, account: &Account) -> Result<()> {
-    let incoming = claude_login::saved_login(&account.id)?.ok_or_else(|| {
-        anyhow!(
-            "no saved sign-in for {}; add the account again",
-            account.name
-        )
-    })?;
+    let incoming = claude_login::saved_login(&account.id)
+        .await?
+        .ok_or_else(|| {
+            anyhow!(
+                "no saved sign-in for {}; add the account again",
+                account.name
+            )
+        })?;
     if let Some(previous) = previous
-        && let Some(outgoing) = claude_login::current_login()?
+        && let Some(outgoing) = claude_login::current_login().await?
     {
-        claude_login::save_login(&previous.id, &outgoing)?;
+        claude_login::save_login(&previous.id, &outgoing).await?;
     }
     claude_login::install_login(Some(&incoming)).await
 }
 
 /// `Some` once the account is signed in, with the name it should show when the sign-in tells it.
-fn signed_in_name(account: &Account) -> Option<Option<String>> {
+async fn signed_in_name(account: &Account) -> Option<Option<String>> {
     match account.provider {
         Provider::Claude => {
-            let login = claude_login::current_login().log_err().flatten()?;
-            claude_login::save_login(&account.id, &login).log_err();
+            let login = claude_login::current_login().await.log_err().flatten()?;
+            claude_login::save_login(&account.id, &login)
+                .await
+                .log_err();
             Some(login.email())
         }
         Provider::Codex => account

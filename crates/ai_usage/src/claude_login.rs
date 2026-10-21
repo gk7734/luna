@@ -1,6 +1,9 @@
 //! Claude Code keeps one sign-in in the macOS keychain no matter which configuration directory it
 //! runs with, so accounts are switched by swapping that sign-in with copies Luna keeps in its own
 //! keychain items.
+//!
+//! All keychain access goes through the `security` tool, as Claude Code's own does: the items it
+//! creates already trust that tool, so reading and writing them never prompts.
 
 use anyhow::{Context as _, Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -8,6 +11,8 @@ use std::path::PathBuf;
 
 const CLAUDE_CODE_SERVICE: &str = "Claude Code-credentials";
 const LUNA_SERVICE: &str = "Luna AI Accounts";
+/// `security`'s exit status when no item matches.
+const ITEM_NOT_FOUND: i32 = 44;
 
 /// A Claude Code sign-in: the credentials it keeps in the keychain, and the account details it
 /// shows, which it keeps in `~/.claude.json`.
@@ -36,8 +41,8 @@ fn keychain_account_name() -> Result<String> {
 }
 
 /// The sign-in Claude Code currently uses, if it's signed in.
-pub(crate) fn current_login() -> Result<Option<ClaudeLogin>> {
-    let Some(credentials) = read_claude_code_credentials()? else {
+pub(crate) async fn current_login() -> Result<Option<ClaudeLogin>> {
+    let Some(credentials) = read_password(CLAUDE_CODE_SERVICE, None).await? else {
         return Ok(None);
     };
     Ok(Some(ClaudeLogin {
@@ -48,44 +53,50 @@ pub(crate) fn current_login() -> Result<Option<ClaudeLogin>> {
 
 /// Makes Claude Code use `login`, or signs it out when there's none.
 pub(crate) async fn install_login(login: Option<&ClaudeLogin>) -> Result<()> {
+    let account_name = keychain_account_name()?;
     match login {
         Some(login) => {
-            write_claude_code_credentials(&login.credentials).await?;
+            write_password(CLAUDE_CODE_SERVICE, &account_name, &login.credentials).await?;
             write_oauth_account(login.oauth_account.clone())
         }
         None => {
-            delete_claude_code_credentials().await?;
+            delete_password(CLAUDE_CODE_SERVICE, &account_name).await?;
             write_oauth_account(None)
         }
     }
 }
 
-pub(crate) fn saved_login(account_id: &str) -> Result<Option<ClaudeLogin>> {
-    let Some(saved) = keychain::read(LUNA_SERVICE, Some(account_id))? else {
+pub(crate) async fn saved_login(account_id: &str) -> Result<Option<ClaudeLogin>> {
+    let Some(saved) = read_password(LUNA_SERVICE, Some(account_id)).await? else {
         return Ok(None);
     };
-    Ok(Some(serde_json::from_slice(&saved)?))
+    Ok(Some(serde_json::from_str(&saved)?))
 }
 
-pub(crate) fn save_login(account_id: &str, login: &ClaudeLogin) -> Result<()> {
-    keychain::write(LUNA_SERVICE, account_id, &serde_json::to_vec(login)?)
+pub(crate) async fn save_login(account_id: &str, login: &ClaudeLogin) -> Result<()> {
+    write_password(LUNA_SERVICE, account_id, &serde_json::to_string(login)?).await
 }
 
-pub(crate) fn delete_saved_login(account_id: &str) -> Result<()> {
-    keychain::delete(LUNA_SERVICE, account_id)
+pub(crate) async fn delete_saved_login(account_id: &str) -> Result<()> {
+    delete_password(LUNA_SERVICE, account_id).await
 }
 
-fn read_claude_code_credentials() -> Result<Option<String>> {
-    let Some(credentials) = keychain::read(CLAUDE_CODE_SERVICE, None)? else {
+/// `account` narrows the search; `None` matches any account under the service.
+async fn read_password(service: &str, account: Option<&str>) -> Result<Option<String>> {
+    let mut args = vec!["find-generic-password", "-s", service];
+    if let Some(account) = account {
+        args.extend(["-a", account]);
+    }
+    args.push("-w");
+    let Some(output) = run_security(&args).await? else {
         return Ok(None);
     };
-    Ok(Some(String::from_utf8(credentials)?))
+    Ok(Some(output.trim_end_matches('\n').to_string()))
 }
 
-/// Uses the `security` tool, as Claude Code does, so the item stays readable by Claude Code
-/// without a keychain prompt.
-async fn write_claude_code_credentials(credentials: &str) -> Result<()> {
-    let hex = credentials
+/// The password goes in as hex, as Claude Code passes it, so JSON quoting can't break it.
+async fn write_password(service: &str, account: &str, password: &str) -> Result<()> {
+    let hex = password
         .as_bytes()
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -94,42 +105,42 @@ async fn write_claude_code_credentials(credentials: &str) -> Result<()> {
         "add-generic-password",
         "-U",
         "-a",
-        &keychain_account_name()?,
+        account,
         "-s",
-        CLAUDE_CODE_SERVICE,
+        service,
         "-X",
         &hex,
     ])
-    .await
+    .await?
+    .map(drop)
+    .ok_or_else(|| anyhow!("couldn't save the {service} keychain item"))
 }
 
-async fn delete_claude_code_credentials() -> Result<()> {
-    if read_claude_code_credentials()?.is_none() {
-        return Ok(());
+async fn delete_password(service: &str, account: &str) -> Result<()> {
+    run_security(&["delete-generic-password", "-a", account, "-s", service]).await?;
+    Ok(())
+}
+
+/// Returns the tool's output, or `None` when no keychain item matched.
+async fn run_security(args: &[&str]) -> Result<Option<String>> {
+    if !cfg!(target_os = "macos") {
+        return Ok(None);
     }
-    run_security(&[
-        "delete-generic-password",
-        "-a",
-        &keychain_account_name()?,
-        "-s",
-        CLAUDE_CODE_SERVICE,
-    ])
-    .await
-}
-
-async fn run_security(args: &[&str]) -> Result<()> {
     let output = util::command::new_command("/usr/bin/security")
         .args(args)
         .output()
         .await
         .context("couldn't run security")?;
+    if output.status.code() == Some(ITEM_NOT_FOUND) {
+        return Ok(None);
+    }
     anyhow::ensure!(
         output.status.success(),
         "security {} failed: {}",
         args.first().copied().unwrap_or_default(),
         String::from_utf8_lossy(&output.stderr).trim()
     );
-    Ok(())
+    Ok(Some(String::from_utf8(output.stdout)?))
 }
 
 fn read_oauth_account() -> Result<Option<serde_json::Value>> {
@@ -166,64 +177,6 @@ fn write_oauth_account(oauth_account: Option<serde_json::Value>) -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-mod keychain {
-    use anyhow::Result;
-    use security_framework::{
-        item::{ItemClass, ItemSearchOptions, Limit, SearchResult},
-        passwords::{delete_generic_password, set_generic_password},
-    };
-
-    /// `account` narrows the search; `None` matches any account under the service.
-    pub fn read(service: &str, account: Option<&str>) -> Result<Option<Vec<u8>>> {
-        let mut search = ItemSearchOptions::new();
-        search
-            .class(ItemClass::generic_password())
-            .service(service)
-            .load_data(true)
-            .limit(Limit::Max(1));
-        if let Some(account) = account {
-            search.account(account);
-        }
-        let Ok(results) = search.search() else {
-            return Ok(None);
-        };
-        Ok(results.into_iter().find_map(|result| match result {
-            SearchResult::Data(data) => Some(data),
-            _ => None,
-        }))
-    }
-
-    pub fn write(service: &str, account: &str, data: &[u8]) -> Result<()> {
-        set_generic_password(service, account, data)?;
-        Ok(())
-    }
-
-    pub fn delete(service: &str, account: &str) -> Result<()> {
-        if read(service, Some(account))?.is_some() {
-            delete_generic_password(service, account)?;
-        }
-        Ok(())
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-mod keychain {
-    use anyhow::{Result, bail};
-
-    pub fn read(_service: &str, _account: Option<&str>) -> Result<Option<Vec<u8>>> {
-        Ok(None)
-    }
-
-    pub fn write(_service: &str, _account: &str, _data: &[u8]) -> Result<()> {
-        bail!("switching Claude accounts is only supported on macOS")
-    }
-
-    pub fn delete(_service: &str, _account: &str) -> Result<()> {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,7 +189,7 @@ mod tests {
         };
         assert_eq!(login.email().as_deref(), Some("someone@example.com"));
         let round_tripped =
-            serde_json::from_slice::<ClaudeLogin>(&serde_json::to_vec(&login).unwrap()).unwrap();
+            serde_json::from_str::<ClaudeLogin>(&serde_json::to_string(&login).unwrap()).unwrap();
         assert_eq!(
             round_tripped.email().as_deref(),
             Some("someone@example.com")
