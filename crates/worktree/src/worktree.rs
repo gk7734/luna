@@ -56,7 +56,7 @@ use std::{
     any::Any,
     borrow::Borrow as _,
     cmp::Ordering,
-    collections::hash_map,
+    collections::{btree_map, hash_map},
     convert::TryFrom,
     ffi::OsStr,
     fmt,
@@ -449,17 +449,35 @@ impl DerefMut for LocalSnapshot {
 
 enum ScanState {
     Started,
-    Updated {
-        snapshot: LocalSnapshot,
-        changes: UpdatedEntriesSet,
-        barrier: SmallVec<[barrier::Sender; 1]>,
-        scanning: bool,
-    },
+    /// The update itself waits in the scanner's [`PendingScanUpdate`].
+    Updated,
     RootUpdated {
         new_path: Arc<SanitizedPath>,
     },
     RootDeleted,
 }
+
+struct ScanUpdate {
+    snapshot: LocalSnapshot,
+    changes: UpdatedEntriesSet,
+    barrier: SmallVec<[barrier::Sender; 1]>,
+    scanning: bool,
+}
+
+impl ScanUpdate {
+    fn merge(&mut self, newer: ScanUpdate) {
+        self.changes = merge_updated_entries(&self.changes, &newer.changes);
+        self.snapshot = newer.snapshot;
+        self.scanning = newer.scanning;
+        self.barrier.extend(newer.barrier);
+    }
+}
+
+/// Holds at most one undelivered scan update. While the main thread is busy, bursts of
+/// filesystem events merge into it instead of queueing a snapshot per batch, which let
+/// memory grow without bound (zed#48968).
+#[derive(Clone, Default)]
+struct PendingScanUpdate(Arc<Mutex<Option<ScanUpdate>>>);
 
 struct UpdateObservationState {
     snapshots_tx: mpsc::UnboundedSender<(LocalSnapshot, UpdatedEntriesSet)>,
@@ -1358,7 +1376,9 @@ impl LocalWorktree {
         let track_git_repositories = self.visible;
         let settings = self.settings.clone();
         let (scan_states_tx, mut scan_states_rx) = mpsc::unbounded();
+        let pending_update = PendingScanUpdate::default();
         let background_scanner = cx.background_spawn({
+            let pending_update = pending_update.clone();
             let abs_path = snapshot.abs_path.as_path().to_path_buf();
             let background = cx.background_executor().clone();
             async move {
@@ -1377,6 +1397,7 @@ impl LocalWorktree {
                     fs,
                     fs_case_sensitive,
                     status_updates_tx: scan_states_tx,
+                    pending_update,
                     executor: background,
                     scan_requests_rx,
                     path_prefixes_to_scan_rx,
@@ -1413,12 +1434,16 @@ impl LocalWorktree {
                         ScanState::Started => {
                             *this.is_scanning.0.borrow_mut() = true;
                         }
-                        ScanState::Updated {
-                            snapshot,
-                            changes,
-                            barrier,
-                            scanning,
-                        } => {
+                        ScanState::Updated => {
+                            let Some(ScanUpdate {
+                                snapshot,
+                                changes,
+                                barrier,
+                                scanning,
+                            }) = pending_update.0.lock().take()
+                            else {
+                                return;
+                            };
                             *this.is_scanning.0.borrow_mut() = scanning;
                             this.set_snapshot(snapshot, changes, cx);
                             drop(barrier);
@@ -4368,6 +4393,7 @@ struct BackgroundScanner {
     fs: Arc<dyn Fs>,
     fs_case_sensitive: bool,
     status_updates_tx: UnboundedSender<ScanState>,
+    pending_update: PendingScanUpdate,
     executor: BackgroundExecutor,
     scan_requests_rx: async_channel::Receiver<ScanRequest>,
     path_prefixes_to_scan_rx: async_channel::Receiver<PathPrefixScanRequest>,
@@ -5380,13 +5406,22 @@ impl BackgroundScanner {
         );
         state.changed_paths.clear();
 
+        let update = ScanUpdate {
+            snapshot: new_snapshot,
+            changes,
+            barrier,
+            scanning,
+        };
+        let mut pending_update = self.pending_update.0.lock();
+        if let Some(pending_update) = pending_update.as_mut() {
+            // A notification for the pending update is still queued.
+            pending_update.merge(update);
+            return !self.status_updates_tx.is_closed();
+        }
+        *pending_update = Some(update);
+        drop(pending_update);
         self.status_updates_tx
-            .unbounded_send(ScanState::Updated {
-                snapshot: new_snapshot,
-                changes,
-                scanning,
-                barrier,
-            })
+            .unbounded_send(ScanState::Updated)
             .is_ok()
     }
 
@@ -6410,6 +6445,46 @@ async fn discover_ancestor_git_repo(
     (ignores, exclude, None)
 }
 
+/// Combines two consecutive diffs into the diff from the older one's base to the newer one's
+/// snapshot, keeping the path order that `build_diff` produces.
+fn merge_updated_entries(
+    older: &UpdatedEntriesSet,
+    newer: &UpdatedEntriesSet,
+) -> UpdatedEntriesSet {
+    use PathChange::{Added, AddedOrUpdated, Loaded, Removed, Updated};
+
+    let mut merged = older
+        .iter()
+        .map(|(path, id, change)| ((path.clone(), *id), *change))
+        .collect::<BTreeMap<_, _>>();
+    for (path, id, change) in newer.iter() {
+        match merged.entry((path.clone(), *id)) {
+            btree_map::Entry::Vacant(entry) => {
+                entry.insert(*change);
+            }
+            btree_map::Entry::Occupied(mut entry) => {
+                let combined = match (*entry.get(), *change) {
+                    // Never observed by consumers.
+                    (Added | Loaded, Removed) => {
+                        entry.remove();
+                        continue;
+                    }
+                    (_, Removed) => Removed,
+                    (Removed, _) => Updated,
+                    (older @ (Added | Loaded), _) => older,
+                    (AddedOrUpdated, Updated) => AddedOrUpdated,
+                    (_, newer) => newer,
+                };
+                entry.insert(combined);
+            }
+        }
+    }
+    merged
+        .into_iter()
+        .map(|((path, id), change)| (path, id, change))
+        .collect()
+}
+
 fn merge_event_roots(changed_paths: &[Arc<RelPath>], event_roots: &[EventRoot]) -> Vec<EventRoot> {
     let mut merged_event_roots = Vec::with_capacity(changed_paths.len() + event_roots.len());
     let mut changed_paths = changed_paths.iter().peekable();
@@ -7428,8 +7503,9 @@ fn push_normalized(rope: &mut Rope, text: &str, scratch: &mut String) {
 mod tests {
     use super::{
         BackgroundScanner, BackgroundScannerPhase, BackgroundScannerState, IgnoreStack,
-        NullWatcher, RemovedEntries, STREAM_BLOCK_BYTES, ScanRequest, UpdateIgnoreStatusJob,
-        Worktree, stream_utf8_into_rope,
+        NullWatcher, PathChange, PendingScanUpdate, ProjectEntryId, RemovedEntries,
+        STREAM_BLOCK_BYTES, ScanRequest, UpdateIgnoreStatusJob, UpdatedEntriesSet, Worktree,
+        merge_updated_entries, stream_utf8_into_rope,
     };
     use collections::{HashMap, HashSet};
     use fs::{FakeFs, Fs, RemoveOptions, RenameOptions};
@@ -7441,6 +7517,45 @@ mod tests {
     use std::{path::Path, sync::Arc};
     use text::LineEnding;
     use util::{path, rel_path::rel_path};
+
+    #[test]
+    fn test_merge_updated_entries() {
+        use PathChange::*;
+        fn set(changes: &[(&str, usize, PathChange)]) -> UpdatedEntriesSet {
+            changes
+                .iter()
+                .map(|(path, id, change)| (rel_path(path).into(), ProjectEntryId(*id), *change))
+                .collect()
+        }
+
+        let older = set(&[
+            ("a", 1, Added),
+            ("b", 2, Updated),
+            ("c", 3, Removed),
+            ("d", 4, Added),
+            ("e", 5, AddedOrUpdated),
+        ]);
+        let newer = set(&[
+            ("a", 1, Updated),
+            ("b", 2, Removed),
+            ("c", 3, Added),
+            ("c", 9, Added),
+            ("d", 4, Removed),
+            ("e", 5, Updated),
+            ("f", 6, Loaded),
+        ]);
+        assert_eq!(
+            merge_updated_entries(&older, &newer),
+            set(&[
+                ("a", 1, Added),
+                ("b", 2, Removed),
+                ("c", 3, Updated),
+                ("c", 9, Added),
+                ("e", 5, AddedOrUpdated),
+                ("f", 6, Loaded),
+            ])
+        );
+    }
 
     /// Streams `bytes` the way `decode_file_text_to_rope` would, returning the
     /// decoded text and detected line ending, or `None` if the fast path bailed.
@@ -7561,6 +7676,7 @@ mod tests {
                     fs: fs.clone(),
                     fs_case_sensitive: tree.fs_case_sensitive,
                     status_updates_tx,
+                    pending_update: PendingScanUpdate::default(),
                     executor: cx.background_executor().clone(),
                     scan_requests_rx: async_channel::unbounded().1,
                     path_prefixes_to_scan_rx: async_channel::unbounded().1,
