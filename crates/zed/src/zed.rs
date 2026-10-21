@@ -6058,6 +6058,12 @@ mod tests {
                 "zed_predict_onboarding",
                 "zeta",
             ];
+            // Registered by crates that are only compiled with the `ai` feature.
+            #[cfg(not(feature = "ai"))]
+            let expected_namespaces = expected_namespaces
+                .into_iter()
+                .filter(|namespace| !["edit_prediction", "zeta"].contains(namespace))
+                .collect::<Vec<_>>();
             assert_eq!(
                 all_namespaces,
                 expected_namespaces
@@ -6248,23 +6254,30 @@ mod tests {
             project_panel::init(cx);
             outline_panel::init(cx);
             terminal_view::init(cx);
-            let credentials_provider = zed_credentials_provider::global(cx);
+            #[cfg(feature = "ai")]
             copilot_chat::init(
                 app_state.client.http_client(),
-                credentials_provider,
+                zed_credentials_provider::global(cx),
                 copilot_chat::CopilotChatConfiguration::default(),
                 cx,
             );
             image_viewer::init(cx);
             language_model::init(cx);
-            client::RefreshLlmTokenListener::register(
-                app_state.client.clone(),
-                app_state.user_store.clone(),
-                cx,
-            );
-            language_models::init(app_state.user_store.clone(), app_state.client.clone(), cx);
-            web_search::init(cx);
-            web_search_providers::init(app_state.client.clone(), app_state.user_store.clone(), cx);
+            #[cfg(feature = "ai")]
+            {
+                client::RefreshLlmTokenListener::register(
+                    app_state.client.clone(),
+                    app_state.user_store.clone(),
+                    cx,
+                );
+                language_models::init(app_state.user_store.clone(), app_state.client.clone(), cx);
+                web_search::init(cx);
+                web_search_providers::init(
+                    app_state.client.clone(),
+                    app_state.user_store.clone(),
+                    cx,
+                );
+            }
             let prompt_builder = PromptBuilder::load(app_state.fs.clone(), false, cx);
             project::AgentRegistryStore::init_global(
                 cx,

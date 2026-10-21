@@ -22,6 +22,7 @@ fn make_settings_with_read_only(patterns: &[&str]) -> WorktreeSettings {
         .unwrap(),
         scan_symlinks: Default::default(),
         file_scan_depth: None,
+        indexing: true,
     }
 }
 

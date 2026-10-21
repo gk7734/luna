@@ -1140,6 +1140,7 @@ impl VsCodeSettings {
         WorktreeSettingsContent {
             prevent_sharing_in_public_channels: false,
             file_scan_depth: None,
+            indexing: None,
             file_scan_exclusions: Self::enabled_patterns(self.read_value("files.exclude")),
             // `files.watcherInclude` adds watch roots, not Git-ignore overrides
             file_scan_inclusions: None,

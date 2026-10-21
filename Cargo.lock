@@ -195,6 +195,7 @@ dependencies = [
  "language",
  "project",
  "proto",
+ "settings",
  "smallvec",
  "ui",
  "util",

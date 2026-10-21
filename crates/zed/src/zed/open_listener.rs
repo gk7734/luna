@@ -1550,6 +1550,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(feature = "ai")]
     fn agent_url_with_prompt(prompt: &str) -> String {
         let mut serializer = url::form_urlencoded::Serializer::new("zed://agent?".to_string());
         serializer.append_pair("prompt", prompt);
