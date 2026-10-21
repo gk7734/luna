@@ -674,6 +674,13 @@ pub trait LspAdapter: 'static + Send + Sync + DynLspInstaller {
         false
     }
 
+    /// Whether to start the server automatically for the local project rooted at `worktree_root`,
+    /// so that servers for an optional framework don't run in projects that don't use it. Starting
+    /// the server explicitly bypasses this.
+    fn should_start_automatically(&self, _worktree_root: &Path) -> bool {
+        true
+    }
+
     /// Support custom initialize params.
     fn prepare_initialize_params(
         &self,

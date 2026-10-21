@@ -137,6 +137,10 @@ impl LspAdapter for TailwindCssLspAdapter {
         Self::SERVER_NAME
     }
 
+    fn should_start_automatically(&self, worktree_root: &Path) -> bool {
+        crate::tailwind::project_uses_tailwind(worktree_root)
+    }
+
     async fn initialization_options(
         self: Arc<Self>,
         _: &Arc<dyn LspAdapterDelegate>,

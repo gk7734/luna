@@ -135,10 +135,34 @@ impl LspInstaller for TailwindLspAdapter {
     }
 }
 
+/// Tailwind is a dependency of the project, or has a (v3) config file. The server otherwise starts
+/// for every JavaScript, TypeScript, HTML and CSS project and idles at over 50 MB.
+pub(crate) fn project_uses_tailwind(worktree_root: &Path) -> bool {
+    const CONFIG_FILES: [&str; 4] = [
+        "tailwind.config.js",
+        "tailwind.config.cjs",
+        "tailwind.config.mjs",
+        "tailwind.config.ts",
+    ];
+    if CONFIG_FILES
+        .iter()
+        .any(|config_file| worktree_root.join(config_file).is_file())
+    {
+        return true;
+    }
+    // A small file read once per project when a server would start.
+    std::fs::read_to_string(worktree_root.join("package.json"))
+        .is_ok_and(|package_json| package_json.contains("\"tailwindcss\""))
+}
+
 #[async_trait(?Send)]
 impl LspAdapter for TailwindLspAdapter {
     fn name(&self) -> LanguageServerName {
         Self::SERVER_NAME
+    }
+
+    fn should_start_automatically(&self, worktree_root: &Path) -> bool {
+        project_uses_tailwind(worktree_root)
     }
 
     async fn initialization_options(
@@ -230,4 +254,34 @@ async fn get_cached_server_binary(
     })
     .await
     .log_err()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::project_uses_tailwind;
+
+    #[test]
+    fn test_project_uses_tailwind() {
+        let project = tempfile::tempdir().expect("temp dir");
+        assert!(!project_uses_tailwind(project.path()));
+
+        std::fs::write(
+            project.path().join("package.json"),
+            r#"{ "dependencies": { "react": "19.0.0" } }"#,
+        )
+        .expect("write package.json");
+        assert!(!project_uses_tailwind(project.path()));
+
+        std::fs::write(
+            project.path().join("package.json"),
+            r#"{ "devDependencies": { "tailwindcss": "^4.0.0" } }"#,
+        )
+        .expect("write package.json");
+        assert!(project_uses_tailwind(project.path()));
+
+        let configured_project = tempfile::tempdir().expect("temp dir");
+        std::fs::write(configured_project.path().join("tailwind.config.ts"), "")
+            .expect("write config");
+        assert!(project_uses_tailwind(configured_project.path()));
+    }
 }

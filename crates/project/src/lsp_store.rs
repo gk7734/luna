@@ -445,6 +445,13 @@ impl LocalLspStore {
                 .into_iter()
                 .find(|adapter| adapter.name() == disposition.server_name)
                 .expect("To find LSP adapter");
+            if start_mode == LanguageServerStartMode::Automatic
+                && !adapter
+                    .adapter
+                    .should_start_automatically(&worktree_handle.read(cx).abs_path())
+            {
+                return None;
+            }
             let new_language_server_id = self.start_language_server(
                 worktree_handle,
                 delegate,
