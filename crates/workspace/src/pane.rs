@@ -714,6 +714,11 @@ impl Pane {
             }
         } else if self.should_display_welcome_page
             && let Some(welcome_page) = self.welcome_page.as_ref()
+            // Inside a project the pane keeps focus, so opening files and project-wide
+            // actions behave as with any empty pane.
+            && self.project.upgrade().is_none_or(|project| {
+                project.read(cx).visible_worktrees(cx).next().is_none()
+            })
         {
             if self.focus_handle.is_focused(window) {
                 welcome_page.read(cx).focus_handle(cx).focus(window, cx);
@@ -4595,7 +4600,6 @@ impl Render for Pane {
                 pane.child((self.render_tab_bar.clone())(self, window, cx))
             })
             .child({
-                let has_worktrees = project.read(cx).visible_worktrees(cx).next().is_some();
                 // main content
                 div()
                     .flex_1()
@@ -4631,7 +4635,9 @@ impl Render for Pane {
                                         }
                                     },
                                 ));
-                            if has_worktrees || !self.should_display_welcome_page {
+                            // Like an IDE's empty editor area, an empty center pane offers the
+                            // welcome page's actions inside a project too, not a blank area.
+                            if !self.should_display_welcome_page {
                                 placeholder
                             } else {
                                 if self.welcome_page.is_none() {
