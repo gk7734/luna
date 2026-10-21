@@ -12,7 +12,11 @@ use gpui::{App, AppContext as _, Context, Entity, Global, SharedString, Task, ac
 use http_client::HttpClient;
 use project::terminals::ExtraTerminalEnv;
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use ui::IconName;
 use util::ResultExt as _;
 
@@ -140,6 +144,8 @@ struct StoredAccounts {
 
 const STORED_ACCOUNTS_KEY: &str = "ai_usage_accounts";
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// Opening the usage menu shows fresh numbers unless they're at most this old.
+const MENU_REFRESH_AGE: Duration = Duration::from_secs(60);
 
 pub struct AiUsage {
     added_accounts: Vec<Account>,
@@ -147,6 +153,7 @@ pub struct AiUsage {
     usage: HashMap<String, AccountUsage>,
     http_client: Arc<dyn HttpClient>,
     refresh_task: Option<Task<()>>,
+    last_refresh: Option<Instant>,
     _refresh_loop: Task<()>,
 }
 
@@ -169,20 +176,21 @@ pub fn init(cx: &mut App) {
             usage: HashMap::default(),
             http_client,
             refresh_task: None,
+            last_refresh: None,
             _refresh_loop: cx.spawn(async move |this, cx| {
                 loop {
+                    cx.background_executor().timer(REFRESH_INTERVAL).await;
                     if this
                         .update(cx, |this: &mut AiUsage, cx| {
                             // Usage only matters while someone is looking at Luna.
                             if cx.active_window().is_some() {
-                                this.refresh(cx);
+                                this.refresh_if_older_than(REFRESH_INTERVAL, cx);
                             }
                         })
                         .is_err()
                     {
                         return;
                     }
-                    cx.background_executor().timer(REFRESH_INTERVAL).await;
                 }
             }),
         };
@@ -190,8 +198,14 @@ pub fn init(cx: &mut App) {
         this
     });
     cx.set_global(GlobalAiUsage(ai_usage));
-    cx.observe_new(|workspace: &mut workspace::Workspace, _, _| {
+    // The first window opens after init, so usage loads as soon as there's one to show it in.
+    cx.observe_new(|workspace: &mut workspace::Workspace, _, cx| {
         usage_indicator::register_workspace_actions(workspace);
+        if let Some(ai_usage) = AiUsage::global(cx) {
+            ai_usage.update(cx, |ai_usage, cx| {
+                ai_usage.refresh_if_older_than(REFRESH_INTERVAL, cx)
+            });
+        }
     })
     .detach();
 }
@@ -275,7 +289,22 @@ impl AiUsage {
         cx.notify();
     }
 
+    pub fn refresh_if_older_than(&mut self, max_age: Duration, cx: &mut Context<Self>) {
+        let is_fresh = self
+            .last_refresh
+            .is_some_and(|last_refresh| last_refresh.elapsed() < max_age);
+        if !is_fresh {
+            self.refresh(cx);
+        }
+    }
+
+    /// Fresh enough for the menu that's about to open.
+    pub fn refresh_for_menu(&mut self, cx: &mut Context<Self>) {
+        self.refresh_if_older_than(MENU_REFRESH_AGE, cx);
+    }
+
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.last_refresh = Some(Instant::now());
         let accounts = Provider::ALL
             .into_iter()
             .flat_map(|provider| self.accounts(provider))

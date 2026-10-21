@@ -300,7 +300,10 @@ impl Render for UsageIndicator {
                 .tooltip(Tooltip::text("AI Account Usage"));
         PopoverMenu::new("ai-usage-menu")
             .trigger(trigger)
-            .menu(move |window, cx| Some(build_menu(ai_usage.clone(), window, cx)))
+            .menu(move |window, cx| {
+                ai_usage.update(cx, |ai_usage, cx| ai_usage.refresh_for_menu(cx));
+                Some(build_menu(ai_usage.clone(), window, cx))
+            })
             .anchor(Anchor::BottomLeft)
             .into_any_element()
     }
