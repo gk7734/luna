@@ -20,6 +20,7 @@ pub const DOT_GIT: &str = ".git";
 pub const GITIGNORE: &str = ".gitignore";
 pub const FSMONITOR_DAEMON: &str = "fsmonitor--daemon";
 pub const LFS_DIR: &str = "lfs";
+pub const ANNEX_DIR: &str = "annex";
 pub const OBJECTS_DIR: &str = "objects";
 pub const REFS_DIR: &str = "refs";
 pub const REFTABLE_DIR: &str = "reftable";
@@ -36,6 +37,7 @@ pub const BISECT_LOG: &str = "BISECT_LOG";
 pub const GC_PID: &str = "gc.pid";
 pub const INFO_DIR: &str = "info";
 pub const REPO_EXCLUDE: &str = "info/exclude";
+pub const WORKTREES_DIR: &str = "worktrees";
 
 actions!(
     git,
