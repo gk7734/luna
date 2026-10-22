@@ -124,6 +124,9 @@ pub struct OutlineConfig {
     pub open_capture_ix: Option<u32>,
     pub close_capture_ix: Option<u32>,
     pub annotation_capture_ix: Option<u32>,
+    /// Patterns marked `(#set! sticky.only)` match items that sticky scroll pins but that don't
+    /// belong in the outline, such as JSX elements.
+    pub sticky_only_patterns: Vec<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -532,6 +535,14 @@ impl Grammar {
                 Capture::Optional("annotation", &mut annotation_capture_ix),
             ],
         ) {
+            let sticky_only_patterns = (0..query.pattern_count())
+                .map(|ix| {
+                    query
+                        .property_settings(ix)
+                        .iter()
+                        .any(|setting| setting.key.as_ref() == "sticky.only")
+                })
+                .collect();
             self.outline_config = Some(OutlineConfig {
                 query,
                 item_capture_ix,
@@ -541,6 +552,7 @@ impl Grammar {
                 open_capture_ix,
                 close_capture_ix,
                 annotation_capture_ix,
+                sticky_only_patterns,
             });
         }
         Ok(self)

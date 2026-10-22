@@ -1000,6 +1000,45 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_jsx_elements_are_only_sticky(cx: &mut TestAppContext) {
+        use language::{Point, ToPoint as _};
+
+        let language = crate::language("tsx", tree_sitter_typescript::LANGUAGE_TSX.into());
+        let text = r#"
+            function Card() {
+              return (
+                <View style={styles.card}>
+                  <Tooltip
+                    point={point}
+                  />
+                </View>
+              );
+            }
+        "#
+        .unindent();
+
+        let buffer = cx.new(|cx| language::Buffer::local(text, cx).with_language(language, cx));
+        let snapshot = buffer.read_with(cx, |buffer, _| buffer.snapshot());
+        assert_eq!(
+            snapshot
+                .outline(None)
+                .items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            &["function Card()"]
+        );
+        assert_eq!(
+            snapshot
+                .sticky_items_containing(Point::new(5, 0)..Point::new(5, 0), None)
+                .iter()
+                .map(|item| (item.range.start.to_point(&snapshot).row, item.depth))
+                .collect::<Vec<_>>(),
+            &[(0, 0), (2, 1), (3, 2)]
+        );
+    }
+
+    #[gpui::test]
     async fn test_outline_with_destructuring(cx: &mut TestAppContext) {
         for language in [
             crate::language(

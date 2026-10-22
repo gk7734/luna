@@ -4811,6 +4811,14 @@ impl BufferSnapshot {
             while let Some(mat) = matches.peek() {
                 let config = &configs[mat.grammar_index];
                 let containing_item_node = maybe!({
+                    if config
+                        .sticky_only_patterns
+                        .get(mat.pattern_index)
+                        .copied()
+                        .unwrap_or(false)
+                    {
+                        return None;
+                    }
                     let item_node = mat.captures.iter().find_map(|cap| {
                         if cap.index == config.item_capture_ix {
                             Some(cap.node)
@@ -4853,9 +4861,21 @@ impl BufferSnapshot {
         self.outline_items_containing_internal(
             range,
             include_extra_context,
+            false,
             theme,
             |this, range| this.anchor_after(range.start)..this.anchor_before(range.end),
         )
+    }
+
+    /// Like [`Self::outline_items_containing`], plus the items only sticky scroll pins.
+    pub fn sticky_items_containing<T: ToOffset>(
+        &self,
+        range: Range<T>,
+        theme: Option<&SyntaxTheme>,
+    ) -> Vec<OutlineItem<Anchor>> {
+        self.outline_items_containing_internal(range, true, true, theme, |this, range| {
+            this.anchor_after(range.start)..this.anchor_before(range.end)
+        })
     }
 
     pub fn outline_items_as_points_containing<T: ToOffset>(
@@ -4864,9 +4884,13 @@ impl BufferSnapshot {
         include_extra_context: bool,
         theme: Option<&SyntaxTheme>,
     ) -> Vec<OutlineItem<Point>> {
-        self.outline_items_containing_internal(range, include_extra_context, theme, |_, range| {
-            range
-        })
+        self.outline_items_containing_internal(
+            range,
+            include_extra_context,
+            false,
+            theme,
+            |_, range| range,
+        )
     }
 
     pub fn outline_items_as_offsets_containing<T: ToOffset>(
@@ -4878,6 +4902,7 @@ impl BufferSnapshot {
         self.outline_items_containing_internal(
             range,
             include_extra_context,
+            false,
             theme,
             |buffer, range| range.to_offset(buffer),
         )
@@ -4887,6 +4912,7 @@ impl BufferSnapshot {
         &self,
         range: Range<T>,
         include_extra_context: bool,
+        include_sticky_only: bool,
         theme: Option<&SyntaxTheme>,
         range_callback: fn(&Self, Range<Point>) -> Range<U>,
     ) -> Vec<OutlineItem<U>> {
@@ -4902,6 +4928,15 @@ impl BufferSnapshot {
                 .outline_config
                 .as_ref()
                 .unwrap();
+            let is_sticky_only = config
+                .sticky_only_patterns
+                .get(mat.pattern_index)
+                .copied()
+                .unwrap_or(false);
+            if is_sticky_only && !include_sticky_only {
+                matches.advance();
+                continue;
+            }
             if let Some(item) =
                 self.next_outline_item(config, &mat, &range, include_extra_context, theme)
             {

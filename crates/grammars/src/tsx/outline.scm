@@ -282,3 +282,13 @@
         ]))))
 
 (comment) @annotation
+
+; Sticky scroll pins JSX elements spanning several lines; they stay out of the outline.
+((jsx_element
+  open_tag: (jsx_opening_element
+    name: (_) @name)) @item
+  (#set! sticky.only))
+
+((jsx_self_closing_element
+  name: (_) @name) @item
+  (#set! sticky.only))

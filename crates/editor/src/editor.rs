@@ -1963,9 +1963,8 @@ impl Editor {
         let syntax = self.style(cx).syntax.clone();
         let background_task = cx.background_spawn(async move {
             buffer
-                .outline_items_containing(
+                .sticky_items_containing(
                     Point::new(start_row, 0)..Point::new(end_row, 0),
-                    true,
                     Some(syntax.as_ref()),
                 )
                 .into_iter()

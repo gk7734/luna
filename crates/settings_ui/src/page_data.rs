@@ -559,7 +559,7 @@ fn general_page(cx: &App) -> SettingsPage {
 }
 
 fn appearance_page() -> SettingsPage {
-    fn theme_section() -> [SettingsPageItem; 4] {
+    fn theme_section() -> [SettingsPageItem; 5] {
         [
             SettingsPageItem::SectionHeader("Theme"),
             SettingsPageItem::DynamicItem(DynamicItem {
@@ -938,6 +938,45 @@ fn appearance_page() -> SettingsPage {
                     },
                     write: |settings_content, value, _| {
                         settings_content.project.all_languages.defaults.colorize_brackets = value;
+                    },
+                }),
+                metadata: None,
+                files: USER | PROJECT,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Rainbow Indent Guides",
+                description: "Color indent guides by indentation level, using the theme's accent colors.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("indent_guides.coloring"),
+                    pick: |settings_content| {
+                        let coloring = settings_content
+                            .project
+                            .all_languages
+                            .defaults
+                            .indent_guides
+                            .as_ref()?
+                            .coloring.as_ref()?;
+                        Some(if *coloring == settings::IndentGuideColoring::IndentAware {
+                            &true
+                        } else {
+                            &false
+                        })
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .project
+                            .all_languages
+                            .defaults
+                            .indent_guides
+                            .get_or_insert_default()
+                            .coloring = value.map(|rainbow| {
+                            if rainbow {
+                                settings::IndentGuideColoring::IndentAware
+                            } else {
+                                settings::IndentGuideColoring::Fixed
+                            }
+                        });
                     },
                 }),
                 metadata: None,
