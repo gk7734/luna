@@ -94,9 +94,12 @@ make_dmg() {
     hdiutil create -volname Luna -srcfolder "$staging" -fs HFS+ -format UDRW -ov "$writable_dmg" >/dev/null
     hdiutil attach -readwrite -noverify -noautoopen "$writable_dmg" >/dev/null
 
+    # Hidden rather than moved off to the side: anything placed outside the window makes Finder let
+    # the window scroll to it.
+    chflags hidden "$volume/.background"
+
     # Finder keeps the window layout in the volume's .DS_Store, so it has to lay the window out
-    # itself. The icon positions match the arrow and name tags drawn in dmg-background.svg, and
-    # the hidden folders are moved out of sight for people who show hidden files.
+    # itself. The icon positions match the arrow and name tags drawn in dmg-background.svg.
     osascript <<APPLESCRIPT
 tell application "Finder"
     tell disk "Luna"
@@ -113,11 +116,14 @@ tell application "Finder"
         set extension hidden of item "Luna.app" to true
         set position of item "Luna.app" of container window to {180, 186}
         set position of item "Applications" of container window to {480, 186}
+        -- The hidden folders only show for people who show hidden files, but left unplaced Finder
+        -- drops them in the top-left and shifts every icon, and placed outside the window they make
+        -- it scroll. .fseventsd is removed before the image is compressed.
         try
-            set position of item ".background" of container window to {900, 900}
+            set position of item ".background" of container window to {585, 75}
         end try
         try
-            set position of item ".fseventsd" of container window to {1000, 900}
+            set position of item ".fseventsd" of container window to {330, 186}
         end try
         close
         open
@@ -128,6 +134,7 @@ tell application "Finder"
 end tell
 APPLESCRIPT
 
+    rm -rf "$volume/.fseventsd"
     sync
     hdiutil detach "$volume" -quiet
     hdiutil convert "$writable_dmg" -format UDZO -imagekey zlib-level=9 -ov -o "$dmg" >/dev/null
