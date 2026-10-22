@@ -12455,7 +12455,7 @@ impl EditorSnapshot {
                 // runnables, breakpoints and bookmarks are shown in the same place
                 // if all three are there only the runnable is shown
                 } else if show_runnables || show_breakpoints || show_bookmarks {
-                    ch_width * 3.0
+                    ch_width * 2.0
                 } else if show_git_gutter && show_line_numbers {
                     ch_width * 2.0
                 } else if show_git_gutter || show_line_numbers {
@@ -12467,7 +12467,7 @@ impl EditorSnapshot {
             let shows_folds = is_singleton && gutter_settings.folds;
 
             let right_padding = if shows_folds && show_line_numbers {
-                ch_width * 4.0
+                ch_width * 3.0
             } else if shows_folds || (!is_singleton && show_line_numbers) {
                 ch_width * 3.0
             } else if show_line_numbers {

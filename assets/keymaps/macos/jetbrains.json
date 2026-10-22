@@ -138,6 +138,7 @@
       "cmd-5": "debug_panel::ToggleFocus",
       "cmd-6": "diagnostics::Deploy",
       "cmd-7": "outline_panel::ToggleFocus",
+      "cmd-8": "todo_panel::ToggleFocus",
     },
   },
   {
@@ -150,7 +151,7 @@
       "cmd-5": "debug_panel::ToggleFocus",
       "cmd-6": "diagnostics::Deploy",
       "cmd-7": "outline_panel::ToggleFocus",
-      "cmd-8": null, // Services (bottom dock)
+      "cmd-8": "todo_panel::ToggleFocus", // Services in JetBrains, which Luna doesn't have
       "cmd-9": null, // Git History (bottom dock)
       "cmd-0": "git_panel::ToggleFocus",
     },

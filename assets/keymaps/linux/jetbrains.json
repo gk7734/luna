@@ -135,6 +135,7 @@
       "alt-5": "debug_panel::ToggleFocus",
       "alt-6": "diagnostics::Deploy",
       "alt-7": "outline_panel::ToggleFocus",
+      "alt-8": "todo_panel::ToggleFocus",
     },
   },
   {
@@ -147,7 +148,7 @@
       "alt-5": "debug_panel::ToggleFocus",
       "alt-6": "diagnostics::Deploy",
       "alt-7": "outline_panel::ToggleFocus",
-      "alt-8": null, // Services (bottom dock)
+      "alt-8": "todo_panel::ToggleFocus", // Services in JetBrains, which Luna doesn't have
       "alt-9": null, // Git History (bottom dock)
       "alt-0": "git_panel::ToggleFocus",
     },
