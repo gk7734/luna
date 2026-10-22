@@ -2,6 +2,8 @@
 # Builds Luna.app from source so Luna can be opened from the Dock, Finder or Spotlight.
 # Usage: script/bundle-luna-mac [--install | --dmg]
 #   --install copies it to ~/Applications; --dmg packs it into target/release/Luna-<version>-<arch>.dmg
+# Set LUNA_SIGNING_IDENTITY (a Developer ID Application identity) to sign for distribution, and
+# LUNA_NOTARY_PROFILE (a notarytool keychain profile) to also notarize and staple the DMG.
 
 set -euo pipefail
 
@@ -69,8 +71,17 @@ PLIST
 } > "$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 
-# An ad-hoc signature keeps macOS from treating every rebuild as a new, unknown app.
-codesign --force --deep --sign - "$app"
+# Notarization needs a Developer ID signature with the hardened runtime. Without one, an ad-hoc
+# signature still keeps macOS from treating every rebuild as a new, unknown app.
+signing_identity="${LUNA_SIGNING_IDENTITY:-}"
+if [ -n "$signing_identity" ]; then
+    codesign --force --timestamp --options runtime --entitlements crates/zed/resources/zed.entitlements \
+        --sign "$signing_identity" "$app/Contents/MacOS/luna"
+    codesign --force --timestamp --options runtime --entitlements crates/zed/resources/zed.entitlements \
+        --sign "$signing_identity" "$app"
+else
+    codesign --force --deep --sign - "$app"
+fi
 
 make_dmg() {
     # The architecture is named the way Rust names it, which is what the updater looks for.
@@ -139,6 +150,19 @@ APPLESCRIPT
     hdiutil detach "$volume" -quiet
     hdiutil convert "$writable_dmg" -format UDZO -imagekey zlib-level=9 -ov -o "$dmg" >/dev/null
     rm -rf "$staging" "$(dirname "$writable_dmg")"
+
+    if [ -n "$signing_identity" ]; then
+        codesign --force --timestamp --sign "$signing_identity" "$dmg"
+    fi
+    # The profile is made once with `xcrun notarytool store-credentials`, so no secret passes through here.
+    if [ -n "${LUNA_NOTARY_PROFILE:-}" ]; then
+        if [ -z "$signing_identity" ]; then
+            echo "Notarization needs LUNA_SIGNING_IDENTITY set to a Developer ID Application identity" >&2
+            exit 1
+        fi
+        xcrun notarytool submit "$dmg" --keychain-profile "$LUNA_NOTARY_PROFILE" --wait
+        xcrun stapler staple "$dmg"
+    fi
     echo "Built $dmg"
 }
 
