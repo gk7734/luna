@@ -6,14 +6,14 @@
       <stop offset="1" stop-color="#0a0c22"/>
     </linearGradient>
     <radialGradient id="halo" cx="0.5" cy="0.5" r="0.5">
-      <stop offset="0" stop-color="#ffe7a8" stop-opacity="0.1"/>
-      <stop offset="0.7" stop-color="#ffd27a" stop-opacity="0.03"/>
+      <stop offset="0" stop-color="#ffe7a8" stop-opacity="0.16"/>
+      <stop offset="0.7" stop-color="#ffd27a" stop-opacity="0.05"/>
       <stop offset="1" stop-color="#ffd27a" stop-opacity="0"/>
     </radialGradient>
     <linearGradient id="moon" x1="0.15" y1="0.1" x2="0.85" y2="0.95">
-      <stop offset="0" stop-color="#ebe2c6"/>
-      <stop offset="0.55" stop-color="#e6cb92"/>
-      <stop offset="1" stop-color="#d6a35a"/>
+      <stop offset="0" stop-color="#fff8e1"/>
+      <stop offset="0.55" stop-color="#ffe2a0"/>
+      <stop offset="1" stop-color="#f4b860"/>
     </linearGradient>
     <mask id="crescent">
       <rect width="1024" height="1024" fill="black"/>
