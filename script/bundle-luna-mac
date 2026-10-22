@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds Luna.app from source so Luna can be opened from the Dock, Finder or Spotlight.
-# Usage: script/bundle-luna-mac [--install]   (--install copies it to ~/Applications)
+# Usage: script/bundle-luna-mac [--install | --dmg]
+#   --install copies it to ~/Applications; --dmg packs it into target/release/Luna-<version>.dmg
 
 set -euo pipefail
 
@@ -71,11 +72,77 @@ plutil -lint "$app/Contents/Info.plist" >/dev/null
 # An ad-hoc signature keeps macOS from treating every rebuild as a new, unknown app.
 codesign --force --deep --sign - "$app"
 
-if [[ "${1:-}" == "--install" ]]; then
-    mkdir -p "$HOME/Applications"
-    rm -rf "$HOME/Applications/Luna.app"
-    cp -R "$app" "$HOME/Applications/Luna.app"
-    echo "Installed $HOME/Applications/Luna.app"
-else
-    echo "Built $app"
-fi
+make_dmg() {
+    local dmg="$target_dir/release/Luna-${version}.dmg"
+    local staging writable_dmg volume
+    staging="$(mktemp -d)"
+    writable_dmg="$(mktemp -d)/Luna.dmg"
+    volume="/Volumes/Luna"
+
+    if [ -d "$volume" ]; then
+        echo "$volume is already mounted; eject it first" >&2
+        exit 1
+    fi
+
+    mkdir -p "$staging/.background"
+    cp -R "$app" "$staging/Luna.app"
+    cp crates/zed/resources/luna/dmg-background.tiff "$staging/.background/background.tiff"
+    ln -s /Applications "$staging/Applications"
+    hdiutil create -volname Luna -srcfolder "$staging" -fs HFS+ -format UDRW -ov "$writable_dmg" >/dev/null
+    hdiutil attach -readwrite -noverify -noautoopen "$writable_dmg" >/dev/null
+
+    # Finder keeps the window layout in the volume's .DS_Store, so it has to lay the window out
+    # itself. The icon positions match the arrow and name tags drawn in dmg-background.svg, and
+    # the hidden folders are moved out of sight for people who show hidden files.
+    osascript <<APPLESCRIPT
+tell application "Finder"
+    tell disk "Luna"
+        open
+        set current view of container window to icon view
+        set toolbar visible of container window to false
+        set statusbar visible of container window to false
+        set the bounds of container window to {200, 120, 860, 548}
+        set viewOptions to the icon view options of container window
+        set arrangement of viewOptions to not arranged
+        set icon size of viewOptions to 128
+        set text size of viewOptions to 13
+        set background picture of viewOptions to file ".background:background.tiff"
+        set extension hidden of item "Luna.app" to true
+        set position of item "Luna.app" of container window to {180, 186}
+        set position of item "Applications" of container window to {480, 186}
+        try
+            set position of item ".background" of container window to {900, 900}
+        end try
+        try
+            set position of item ".fseventsd" of container window to {1000, 900}
+        end try
+        close
+        open
+        update without registering applications
+        delay 2
+        close
+    end tell
+end tell
+APPLESCRIPT
+
+    sync
+    hdiutil detach "$volume" -quiet
+    hdiutil convert "$writable_dmg" -format UDZO -imagekey zlib-level=9 -ov -o "$dmg" >/dev/null
+    rm -rf "$staging" "$(dirname "$writable_dmg")"
+    echo "Built $dmg"
+}
+
+case "${1:-}" in
+    --install)
+        mkdir -p "$HOME/Applications"
+        rm -rf "$HOME/Applications/Luna.app"
+        cp -R "$app" "$HOME/Applications/Luna.app"
+        echo "Installed $HOME/Applications/Luna.app"
+        ;;
+    --dmg)
+        make_dmg
+        ;;
+    *)
+        echo "Built $app"
+        ;;
+esac
