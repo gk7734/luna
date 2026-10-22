@@ -199,9 +199,9 @@ impl ReleaseChannel {
 
     /// Returns whether we want to poll for updates for this [`ReleaseChannel`]
     ///
-    /// Luna is built from source; Zed's update server would replace it with Zed.
+    /// Luna's releases are built on the dev channel, so every channel polls Luna's GitHub releases.
     pub fn poll_for_updates(&self) -> bool {
-        false
+        true
     }
 
     /// Returns the display name for this [`ReleaseChannel`].

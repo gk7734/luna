@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds Luna.app from source so Luna can be opened from the Dock, Finder or Spotlight.
 # Usage: script/bundle-luna-mac [--install | --dmg]
-#   --install copies it to ~/Applications; --dmg packs it into target/release/Luna-<version>.dmg
+#   --install copies it to ~/Applications; --dmg packs it into target/release/Luna-<version>-<arch>.dmg
 
 set -euo pipefail
 
@@ -73,7 +73,10 @@ plutil -lint "$app/Contents/Info.plist" >/dev/null
 codesign --force --deep --sign - "$app"
 
 make_dmg() {
-    local dmg="$target_dir/release/Luna-${version}.dmg"
+    # The architecture is named the way Rust names it, which is what the updater looks for.
+    local arch
+    arch="$(rustc -vV | sed -n 's/^host: \([^-]*\)-.*/\1/p')"
+    local dmg="$target_dir/release/Luna-${version}-${arch}.dmg"
     local staging writable_dmg volume
     staging="$(mktemp -d)"
     writable_dmg="$(mktemp -d)/Luna.dmg"

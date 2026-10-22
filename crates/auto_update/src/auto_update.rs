@@ -33,6 +33,8 @@ use util::command::new_command;
 use workspace::Workspace;
 
 const SHOULD_SHOW_UPDATE_NOTIFICATION_KEY: &str = "auto-updater-should-show-updated-notification";
+const LUNA_REPOSITORY_URL: &str = "https://github.com/gk7734/luna";
+const LATEST_LUNA_RELEASE_URL: &str = "https://api.github.com/repos/gk7734/luna/releases/latest";
 
 #[derive(Debug)]
 struct MissingDependencyError(String);
@@ -195,6 +197,44 @@ pub struct ReleaseAsset {
     pub url: String,
 }
 
+#[derive(Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+    assets: Vec<GitHubReleaseAsset>,
+}
+
+#[derive(Deserialize)]
+struct GitHubReleaseAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+/// Picks this machine's disk image out of a Luna release, which `script/bundle-luna-mac --dmg`
+/// names `Luna-<version>-<arch>.dmg`.
+fn luna_release_asset(release_json: &[u8], arch: &str) -> Result<ReleaseAsset> {
+    let release = serde_json::from_slice::<GitHubRelease>(release_json).with_context(|| {
+        format!(
+            "error deserializing release {:?}",
+            String::from_utf8_lossy(release_json)
+        )
+    })?;
+    let version = release
+        .tag_name
+        .strip_prefix('v')
+        .unwrap_or(&release.tag_name)
+        .to_string();
+    let asset_name = format!("Luna-{version}-{arch}.dmg");
+    let asset = release
+        .assets
+        .into_iter()
+        .find(|asset| asset.name == asset_name)
+        .with_context(|| format!("release {} has no {asset_name}", release.tag_name))?;
+    Ok(ReleaseAsset {
+        version,
+        url: asset.browser_download_url,
+    })
+}
+
 struct MacOsUnmounter<'a> {
     mount_path: PathBuf,
     background_executor: &'a BackgroundExecutor,
@@ -343,24 +383,13 @@ pub fn check(_: &Check, window: &mut Window, cx: &mut App) {
 }
 
 pub fn release_notes_url(cx: &mut App) -> Option<String> {
-    let release_channel = ReleaseChannel::try_global(cx)?;
-    let url = match release_channel {
-        ReleaseChannel::Stable | ReleaseChannel::Preview => {
-            let auto_updater = AutoUpdater::get(cx)?;
-            let auto_updater = auto_updater.read(cx);
-            let mut current_version = auto_updater.current_version.clone();
-            current_version.pre = semver::Prerelease::EMPTY;
-            current_version.build = semver::BuildMetadata::EMPTY;
-            let release_channel = release_channel.dev_name();
-            let path = format!("/releases/{release_channel}/{current_version}");
-            auto_updater.client.http_client().build_url(&path)
-        }
-        ReleaseChannel::Nightly => {
-            "https://github.com/zed-industries/zed/commits/nightly/".to_string()
-        }
-        ReleaseChannel::Dev => "https://github.com/zed-industries/zed/commits/main/".to_string(),
-    };
-    Some(url)
+    let auto_updater = AutoUpdater::get(cx)?;
+    let mut current_version = auto_updater.read(cx).current_version.clone();
+    current_version.pre = semver::Prerelease::EMPTY;
+    current_version.build = semver::BuildMetadata::EMPTY;
+    Some(format!(
+        "{LUNA_REPOSITORY_URL}/releases/tag/v{current_version}"
+    ))
 }
 
 pub fn view_release_notes(_: &ViewReleaseNotes, cx: &mut App) -> Option<()> {
@@ -737,6 +766,20 @@ impl AutoUpdater {
         })
     }
 
+    async fn get_latest_luna_release(client: &HttpClientWithUrl) -> Result<ReleaseAsset> {
+        let mut response = client
+            .get(LATEST_LUNA_RELEASE_URL, Default::default(), true)
+            .await?;
+        let mut body = Vec::new();
+        response.body_mut().read_to_end(&mut body).await?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "failed to fetch the latest Luna release: {:?}",
+            String::from_utf8_lossy(&body),
+        );
+        luna_release_asset(&body, ARCH)
+    }
+
     async fn update(this: Entity<Self>, cx: &mut AsyncApp) -> Result<()> {
         let (client, installed_version, previous_status, release_channel) =
             this.read_with(cx, |this, cx| {
@@ -756,8 +799,8 @@ impl AutoUpdater {
             cx.notify();
         });
 
-        let fetched_release_data =
-            Self::get_release_asset(&this, release_channel, None, "zed", OS, ARCH, cx).await?;
+        anyhow::ensure!(OS == "macos", "Luna only publishes updates for macOS");
+        let fetched_release_data = Self::get_latest_luna_release(&client).await?;
         let fetched_version = fetched_release_data.clone().version;
         let app_commit_sha = Ok(cx.update(|cx| AppCommitSha::try_global(cx).map(|sha| sha.full())));
         let newer_version = Self::check_if_fetched_version_is_newer(
@@ -922,7 +965,7 @@ impl AutoUpdater {
 
     async fn target_path(installer_dir: &InstallerDir) -> Result<PathBuf> {
         let filename = match OS {
-            "macos" => anyhow::Ok("Zed.dmg"),
+            "macos" => anyhow::Ok("Luna.dmg"),
             "linux" => Ok("zed.tar.gz"),
             "windows" => Ok("Zed.exe"),
             unsupported_os => anyhow::bail!("not supported: {unsupported_os}"),
@@ -1204,7 +1247,8 @@ async fn install_release_macos(
         .file_name()
         .with_context(|| format!("invalid running app path {running_app_path:?}"))?;
 
-    let mount_path = temp_dir.path().join("Zed");
+    // hdiutil mounts the image under its volume name.
+    let mount_path = temp_dir.path().join("Luna");
     let mut mounted_app_path: OsString = mount_path.join(running_app_filename).into();
 
     mounted_app_path.push("/");
@@ -1408,6 +1452,7 @@ mod tests {
 
         cx.update(|cx| {
             settings::init(cx);
+            cx.set_global(db::AppDatabase::test_new());
 
             let current_version = semver::Version::new(0, 100, 0);
             release_channel::init_test(current_version, ReleaseChannel::Stable, cx);
@@ -1419,23 +1464,33 @@ mod tests {
                 let release_available = release_available.load(atomic::Ordering::Relaxed);
                 let dmg_rx = dmg_rx.clone();
                 async move {
-                if req.uri().path() == "/releases/stable/latest/asset" {
-                    if release_available {
-                        return Ok(Response::builder().status(200).body(
-                            r#"{"version":"0.100.1","url":"https://test.example/new-download"}"#.into()
-                        ).unwrap());
-                    } else {
-                        return Ok(Response::builder().status(200).body(
-                            r#"{"version":"0.100.0","url":"https://test.example/old-download"}"#.into()
-                        ).unwrap());
+                    if req.uri().path() == "/repos/gk7734/luna/releases/latest" {
+                        let (version, url) = if release_available {
+                            ("0.100.1", "https://test.example/new-download")
+                        } else {
+                            ("0.100.0", "https://test.example/old-download")
+                        };
+                        let release = serde_json::json!({
+                            "tag_name": format!("v{version}"),
+                            "assets": [{
+                                "name": format!("Luna-{version}-{ARCH}.dmg"),
+                                "browser_download_url": url,
+                            }],
+                        });
+                        return Ok(Response::builder()
+                            .status(200)
+                            .body(release.to_string().into())
+                            .unwrap());
+                    } else if req.uri().path() == "/new-download" {
+                        return Ok(Response::builder()
+                            .status(200)
+                            .body({
+                                let dmg_rx = dmg_rx.lock().take().unwrap();
+                                dmg_rx.await.unwrap().into()
+                            })
+                            .unwrap());
                     }
-                } else if req.uri().path() == "/new-download" {
-                    return Ok(Response::builder().status(200).body({
-                        let dmg_rx = dmg_rx.lock().take().unwrap();
-                        dmg_rx.await.unwrap().into()
-                    }).unwrap());
-                }
-                Ok(Response::builder().status(404).body("".into()).unwrap())
+                    Ok(Response::builder().status(404).body("".into()).unwrap())
                 }
             });
             let client = Client::new(clock, fake_client_http, cx);
@@ -1508,6 +1563,21 @@ mod tests {
         let path = path.unwrap();
         assert_eq!(path, tmp_dir.path().join("zed"));
         assert_eq!(std::fs::read_to_string(path).unwrap(), "<fake-zed-update>");
+    }
+
+    #[test]
+    fn test_luna_release_asset_picks_this_architecture() {
+        let release = br#"{
+            "tag_name": "v1.27.0",
+            "assets": [
+                {"name": "Luna-1.27.0-x86_64.dmg", "browser_download_url": "https://example.com/intel.dmg"},
+                {"name": "Luna-1.27.0-aarch64.dmg", "browser_download_url": "https://example.com/arm.dmg"}
+            ]
+        }"#;
+        let asset = luna_release_asset(release, "aarch64").unwrap();
+        assert_eq!(asset.version, "1.27.0");
+        assert_eq!(asset.url, "https://example.com/arm.dmg");
+        assert!(luna_release_asset(release, "riscv64").is_err());
     }
 
     #[gpui::test]
