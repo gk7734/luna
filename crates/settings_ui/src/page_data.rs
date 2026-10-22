@@ -559,7 +559,7 @@ fn general_page(cx: &App) -> SettingsPage {
 }
 
 fn appearance_page() -> SettingsPage {
-    fn theme_section() -> [SettingsPageItem; 3] {
+    fn theme_section() -> [SettingsPageItem; 4] {
         [
             SettingsPageItem::SectionHeader("Theme"),
             SettingsPageItem::DynamicItem(DynamicItem {
@@ -921,6 +921,27 @@ fn appearance_page() -> SettingsPage {
                         ],
                     }
                 }).collect(),
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Rainbow Brackets",
+                description: "Color matching brackets by nesting depth, using the theme's accent colors.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("colorize_brackets"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project
+                            .all_languages
+                            .defaults
+                            .colorize_brackets
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content.project.all_languages.defaults.colorize_brackets = value;
+                    },
+                }),
+                metadata: None,
+                files: USER | PROJECT,
             }),
         ]
     }
