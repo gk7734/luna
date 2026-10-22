@@ -118,6 +118,7 @@ tell application "Finder"
         set current view of container window to icon view
         set toolbar visible of container window to false
         set statusbar visible of container window to false
+        set pathbar visible of container window to false
         set the bounds of container window to {200, 120, 860, 548}
         set viewOptions to the icon view options of container window
         set arrangement of viewOptions to not arranged
@@ -144,6 +145,26 @@ tell application "Finder"
     end tell
 end tell
 APPLESCRIPT
+
+    # Finder writes the layout to .DS_Store on its own time; detaching before it settles ships a
+    # window with some settings missing, such as the icon size.
+    local previous_size="" stable_checks=0
+    for _ in $(seq 1 30); do
+        local size
+        size="$(stat -f %z "$volume/.DS_Store" 2>/dev/null || true)"
+        if [ -n "$size" ] && [ "$size" = "$previous_size" ]; then
+            stable_checks=$((stable_checks + 1))
+            [ "$stable_checks" -ge 3 ] && break
+        else
+            stable_checks=0
+        fi
+        previous_size="$size"
+        sleep 1
+    done
+    if [ ! -f "$volume/.DS_Store" ]; then
+        echo "Finder didn't save the window layout to $volume/.DS_Store" >&2
+        exit 1
+    fi
 
     rm -rf "$volume/.fseventsd"
     sync
