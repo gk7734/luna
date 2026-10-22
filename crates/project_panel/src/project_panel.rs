@@ -1559,6 +1559,7 @@ impl ProjectPanel {
             match expanded_dir_ids.binary_search(&entry_id) {
                 Ok(ix) if entry.is_dir() => {
                     expanded_dir_ids.remove(ix);
+                    Self::collapse_descendants(worktree, entry_id, expanded_dir_ids);
                     self.selection = Some(SelectedEntry {
                         worktree_id,
                         entry_id,
@@ -1774,6 +1775,13 @@ impl ProjectPanel {
                 match expanded_dir_ids.binary_search(&entry_id) {
                     Ok(ix) => {
                         expanded_dir_ids.remove(ix);
+                        if let Some(worktree) = project.worktree_for_id(worktree_id, cx) {
+                            Self::collapse_descendants(
+                                worktree.read(cx),
+                                entry_id,
+                                expanded_dir_ids,
+                            );
+                        }
                     }
                     Err(ix) => {
                         project.expand_entry(worktree_id, entry_id, cx);
@@ -1846,6 +1854,28 @@ impl ProjectPanel {
                 }
             }
         });
+    }
+
+    /// Closing a folder closes the folders inside it too, so reopening it starts collapsed.
+    fn collapse_descendants(
+        worktree: &Worktree,
+        entry_id: ProjectEntryId,
+        expanded_dir_ids: &mut Vec<ProjectEntryId>,
+    ) {
+        let Some(entry) = worktree.entry_for_id(entry_id) else {
+            return;
+        };
+        let mut dirs_to_visit = vec![entry.path.clone()];
+        while let Some(path) = dirs_to_visit.pop() {
+            for child in worktree.child_entries(&path) {
+                if child.is_dir() {
+                    if let Ok(ix) = expanded_dir_ids.binary_search(&child.id) {
+                        expanded_dir_ids.remove(ix);
+                    }
+                    dirs_to_visit.push(child.path.clone());
+                }
+            }
+        }
     }
 
     fn collapse_all_for_entry(

@@ -8719,6 +8719,68 @@ async fn test_expand_all_for_entry(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_closing_a_folder_closes_its_subfolders(cx: &mut gpui::TestAppContext) {
+    init_test(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/root"),
+        json!({
+            "dir1": {
+                "subdir1": {
+                    "nested1": { "file1.txt": "" },
+                },
+                "subdir2": { "file2.txt": "" }
+            },
+        }),
+    )
+    .await;
+
+    let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = window
+        .read_with(cx, |mw, _| mw.workspace().clone())
+        .unwrap();
+    let cx = &mut VisualTestContext::from_window(window.into(), cx);
+    let panel = workspace.update_in(cx, ProjectPanel::new);
+    cx.run_until_parked();
+
+    let expand_everything = |cx: &mut VisualTestContext| {
+        toggle_expand_dir(&panel, "root/dir1/subdir1", cx);
+        toggle_expand_dir(&panel, "root/dir1/subdir1/nested1", cx);
+        toggle_expand_dir(&panel, "root/dir1/subdir2", cx);
+    };
+    let collapsed_children = &[
+        "v root",
+        "    v dir1  <== selected",
+        "        > subdir1",
+        "        > subdir2",
+    ];
+
+    // Clicking the folder closed.
+    toggle_expand_dir(&panel, "root/dir1", cx);
+    expand_everything(cx);
+    toggle_expand_dir(&panel, "root/dir1", cx);
+    toggle_expand_dir(&panel, "root/dir1", cx);
+    assert_eq!(
+        visible_entries_as_strings(&panel, 0..20, cx),
+        collapsed_children
+    );
+
+    // Closing it from the keyboard.
+    expand_everything(cx);
+    select_path(&panel, "root/dir1", cx);
+    panel.update_in(cx, |panel, window, cx| {
+        panel.collapse_selected_entry(&CollapseSelectedEntry, window, cx)
+    });
+    toggle_expand_dir(&panel, "root/dir1", cx);
+    assert_eq!(
+        visible_entries_as_strings(&panel, 0..20, cx),
+        collapsed_children
+    );
+}
+
+#[gpui::test]
 async fn test_collapse_all_for_entry(cx: &mut gpui::TestAppContext) {
     init_test(cx);
 
