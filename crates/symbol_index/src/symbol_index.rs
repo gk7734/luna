@@ -317,7 +317,7 @@ impl SymbolIndex {
                     .into_iter()
                     .map(|symbol| IndexedSymbol {
                         name: intern(&mut self.interned_names, symbol.name),
-                        kind: symbol.kind,
+                        ..symbol
                     })
                     .collect();
                 project_index.files.insert(
@@ -495,6 +495,72 @@ pub fn project_todos(project: &Entity<Project>, cx: &App) -> Vec<FileTodos> {
     todos
 }
 
+/// The project's name table, cached until the index changes, so repeated queries while typing
+/// don't walk every indexed symbol again.
+struct PendingNameTable {
+    generation: u64,
+    slot: Arc<Mutex<Option<(u64, Arc<NameTable>)>>>,
+    cached: Option<Arc<NameTable>>,
+    files: Vec<(Arc<RelPath>, Arc<[IndexedSymbol]>)>,
+}
+
+impl PendingNameTable {
+    fn new(project_index: &ProjectIndex) -> Self {
+        let generation = project_index.generation;
+        let slot = project_index.name_table.clone();
+        let cached = slot
+            .lock()
+            .as_ref()
+            .filter(|(table_generation, _)| *table_generation == generation)
+            .map(|(_, table)| table.clone());
+        let files = if cached.is_some() {
+            Vec::new()
+        } else {
+            project_index
+                .files
+                .iter()
+                .filter(|(_, file)| !file.symbols.is_empty())
+                .map(|((_, path), file)| (path.clone(), file.symbols.clone()))
+                .collect()
+        };
+        Self {
+            generation,
+            slot,
+            cached,
+            files,
+        }
+    }
+
+    /// Meant for a background task, since building walks every indexed symbol.
+    fn resolve(self) -> Arc<NameTable> {
+        if let Some(table) = self.cached {
+            return table;
+        }
+        let table = Arc::new(NameTable::build(&self.files));
+        *self.slot.lock() = Some((self.generation, table.clone()));
+        table
+    }
+}
+
+async fn match_names(
+    table: &NameTable,
+    query: &str,
+    limit: usize,
+    executor: gpui::BackgroundExecutor,
+) -> Vec<fuzzy::StringMatch> {
+    let smart_case = query.chars().any(|character| character.is_uppercase());
+    fuzzy::match_strings(
+        &table.match_candidates,
+        query,
+        smart_case,
+        true,
+        limit,
+        &AtomicBool::new(false),
+        executor,
+    )
+    .await
+}
+
 /// Fuzzy-matches project symbols against `query`. The flag is true when results were capped at
 /// `limit`, so callers can re-query as the user types instead of filtering a truncated list.
 pub fn candidates(
@@ -513,51 +579,98 @@ pub fn candidates(
         return Task::ready((Vec::new(), false));
     }
 
-    let generation = project_index.generation;
-    let name_table = project_index.name_table.clone();
-    let cached_table = name_table
-        .lock()
-        .as_ref()
-        .filter(|(table_generation, _)| *table_generation == generation)
-        .map(|(_, table)| table.clone());
-    let files = if cached_table.is_some() {
-        Vec::new()
-    } else {
-        project_index
-            .files
-            .iter()
-            .filter(|(_, file)| !file.symbols.is_empty())
-            .map(|((_, path), file)| (path.clone(), file.symbols.clone()))
-            .collect::<Vec<_>>()
-    };
+    let pending_table = PendingNameTable::new(project_index);
     let query = query.to_string();
     let executor = cx.background_executor().clone();
     cx.background_spawn(async move {
-        let table = match cached_table {
-            Some(table) => table,
-            None => {
-                let table = Arc::new(NameTable::build(&files));
-                *name_table.lock() = Some((generation, table.clone()));
-                table
-            }
-        };
-        let smart_case = query.chars().any(|character| character.is_uppercase());
-        let matches = fuzzy::match_strings(
-            &table.match_candidates,
-            &query,
-            smart_case,
-            true,
-            limit,
-            &AtomicBool::new(false),
-            executor,
-        )
-        .await;
+        let table = pending_table.resolve();
+        let matches = match_names(&table, &query, limit, executor).await;
         let truncated = matches.len() >= limit;
         let symbols = matches
             .into_iter()
             .filter_map(|string_match| table.symbols.get(string_match.candidate_id).cloned())
             .collect();
         (symbols, truncated)
+    })
+}
+
+/// A declaration found by [`search`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct SymbolSearchMatch {
+    pub name: Arc<str>,
+    pub kind: SymbolKind,
+    pub worktree_id: WorktreeId,
+    pub path: Arc<RelPath>,
+    pub row: u32,
+    pub column: u32,
+    /// Byte offsets of the characters in `name` that matched the query.
+    pub positions: Vec<usize>,
+    pub score: f64,
+}
+
+/// Fuzzy-matches declarations by name, like JetBrains' Go to Symbol. Unlike [`candidates`], a name
+/// declared in several files yields one match per file, best matches first.
+pub fn search(
+    project: &Entity<Project>,
+    query: &str,
+    limit: usize,
+    cx: &App,
+) -> Task<Vec<SymbolSearchMatch>> {
+    let Some(index) = cx.try_global::<GlobalSymbolIndex>() else {
+        return Task::ready(Vec::new());
+    };
+    let Some(project_index) = index.0.read(cx).projects.get(&project.entity_id()) else {
+        return Task::ready(Vec::new());
+    };
+    if query.is_empty() || project_index.files.is_empty() {
+        return Task::ready(Vec::new());
+    }
+
+    let pending_table = PendingNameTable::new(project_index);
+    let files = project_index
+        .files
+        .iter()
+        .filter(|(_, file)| !file.symbols.is_empty())
+        .map(|((worktree_id, path), file)| (*worktree_id, path.clone(), file.symbols.clone()))
+        .collect::<Vec<_>>();
+    let query = query.to_string();
+    let executor = cx.background_executor().clone();
+    cx.background_spawn(async move {
+        let table = pending_table.resolve();
+        let name_matches = match_names(&table, &query, limit, executor).await;
+        let name_matches_by_name = name_matches
+            .iter()
+            .map(|string_match| (string_match.string.as_str(), string_match))
+            .collect::<HashMap<_, _>>();
+
+        let mut matches = Vec::new();
+        for (worktree_id, path, symbols) in &files {
+            for symbol in symbols.iter() {
+                let Some(name_match) = name_matches_by_name.get(&*symbol.name) else {
+                    continue;
+                };
+                matches.push(SymbolSearchMatch {
+                    name: symbol.name.clone(),
+                    kind: symbol.kind,
+                    worktree_id: *worktree_id,
+                    path: path.clone(),
+                    row: symbol.row,
+                    column: symbol.column,
+                    positions: name_match.positions.clone(),
+                    score: name_match.score,
+                });
+            }
+        }
+        matches.sort_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| left.name.cmp(&right.name))
+                .then_with(|| (left.worktree_id, &left.path).cmp(&(right.worktree_id, &right.path)))
+                .then_with(|| left.row.cmp(&right.row))
+        });
+        matches.truncate(limit);
+        matches
     })
 }
 

@@ -121,7 +121,10 @@ impl EditorPreview {
 
         match source {
             PreviewSource::Path(abs_path) => {
-                self.update_from_path(abs_path, highlight, window, cx);
+                self.update_from_path(abs_path, highlight, None, window, cx);
+            }
+            PreviewSource::PathRange { abs_path, range } => {
+                self.update_from_path(abs_path, highlight, Some(range), window, cx);
             }
             PreviewSource::Buffer(buffer) => {
                 self.update_from_buffer(buffer, highlight, window, cx);
@@ -141,6 +144,7 @@ impl EditorPreview {
         &mut self,
         abs_path: std::path::PathBuf,
         highlight: Option<MatchLocation>,
+        point_range: Option<std::ops::Range<Point>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -162,6 +166,18 @@ impl EditorPreview {
                 return;
             };
             this.update_in(cx, |this, window, cx| {
+                // Anchors need the loaded buffer, and the file may have changed since the range
+                // was found, so it's clipped to what's there now.
+                let highlight = highlight.or_else(|| {
+                    let range = point_range?;
+                    let snapshot = buffer.read(cx).text_snapshot();
+                    let start = snapshot.clip_point(range.start, Bias::Left);
+                    let end = snapshot.clip_point(range.end, Bias::Left);
+                    Some(MatchLocation {
+                        anchor_range: snapshot.anchor_before(start)..snapshot.anchor_after(end),
+                        range: snapshot.point_to_offset(start)..snapshot.point_to_offset(end),
+                    })
+                });
                 this.update_from_buffer(buffer, highlight, window, cx);
                 cx.notify();
             })

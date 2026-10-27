@@ -522,6 +522,72 @@ async fn test_row_column_numbers_query_inside_file(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_indexed_symbols_listed_under_files_and_open_at_declaration(cx: &mut TestAppContext) {
+    let app_state = init_test(cx);
+    cx.update(symbol_index::init);
+    let fs = app_state.fs.as_fake();
+    fs.insert_tree(path!("/src"), json!({})).await;
+    let project = Project::test(app_state.fs.clone(), [path!("/src").as_ref()], cx).await;
+    project.read_with(cx, |project, _| {
+        project.languages().add(language::rust_lang())
+    });
+    cx.run_until_parked();
+    // Added once Rust is known, so the index parses them.
+    fs.insert_file(
+        path!("/src/shapes.rs"),
+        b"struct Circle;\n\nimpl Circle {\n    fn render_outline() {}\n}\n".to_vec(),
+    )
+    .await;
+    fs.insert_file(path!("/src/render.rs"), b"// Draws shapes\n".to_vec())
+        .await;
+    cx.run_until_parked();
+
+    let (picker, workspace, cx) = build_find_picker(project, cx);
+    simulate_input(cx, "render");
+    picker.update(cx, |finder, _| {
+        let matches = &finder.delegate.matches.matches;
+        let first_symbol_index = matches
+            .iter()
+            .position(|m| matches!(m, Match::Symbol(_)))
+            .expect("the indexed function should be listed");
+        assert!(
+            matches[..first_symbol_index]
+                .iter()
+                .any(|m| matches!(m, Match::Search(_))),
+            "files should come before symbols: {matches:?}"
+        );
+        assert_match_at_position(finder, first_symbol_index, "render_outline");
+        assert!(
+            finder
+                .delegate
+                .separators_after_indices()
+                .contains(&(first_symbol_index - 1))
+        );
+    });
+
+    picker.update(cx, |finder, _| {
+        finder.delegate.selected_index = finder
+            .delegate
+            .matches
+            .matches
+            .iter()
+            .position(|m| matches!(m, Match::Symbol(_)))
+            .expect("the indexed function should be listed");
+    });
+    cx.dispatch_action(Confirm);
+    cx.run_until_parked();
+
+    let editor = cx.update(|_, cx| workspace.read(cx).active_item_as::<Editor>(cx).unwrap());
+    editor.update(cx, |editor, cx| {
+        assert_eq!(editor.title(cx), "shapes.rs");
+        let selections = editor.selections.all_adjusted(&editor.display_snapshot(cx));
+        assert_eq!(selections.len(), 1);
+        assert_eq!(selections[0].start, Point::new(3, 7));
+        assert_eq!(selections[0].start, selections[0].end);
+    });
+}
+
+#[gpui::test]
 async fn test_row_column_numbers_query_inside_unicode_file(cx: &mut TestAppContext) {
     let app_state = init_test(cx);
 
@@ -971,6 +1037,7 @@ async fn test_matching_cancellation(cx: &mut TestAppContext) {
                 ProjectPanelOrdMatch(matches[1].clone()),
                 ProjectPanelOrdMatch(matches[3].clone()),
             ],
+            Vec::new(),
             cx,
         );
 
@@ -985,6 +1052,7 @@ async fn test_matching_cancellation(cx: &mut TestAppContext) {
                 ProjectPanelOrdMatch(matches[2].clone()),
                 ProjectPanelOrdMatch(matches[3].clone()),
             ],
+            Vec::new(),
             cx,
         );
 
@@ -4712,6 +4780,7 @@ fn collect_search_matches(picker: &Picker<FileFinderDelegate>) -> SearchEntries 
             }
             Match::CreateNew(_) => {}
             Match::Channel { .. } => {}
+            Match::Symbol(_) => {}
         }
     }
     search_entries
@@ -4936,6 +5005,7 @@ fn assert_match_at_position(
         Match::Search(path_match) => path_match.0.path.file_name(),
         Match::CreateNew(project_path) => project_path.path.file_name(),
         Match::Channel { channel_name, .. } => Some(channel_name.as_str()),
+        Match::Symbol(symbol) => Some(&*symbol.name),
     }
     .unwrap();
     assert_eq!(match_file_name, expected_file_name);

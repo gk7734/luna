@@ -52,6 +52,9 @@ impl SymbolKind {
 pub struct IndexedSymbol {
     pub name: Arc<str>,
     pub kind: SymbolKind,
+    /// Where the name starts, so search results can jump to the declaration.
+    pub row: u32,
+    pub column: u32,
 }
 
 /// A TODO or FIXME comment, found the way JetBrains IDEs do by default: the keyword as a whole
@@ -108,6 +111,7 @@ fn symbols_in_tree(
     let mut matches = cursor.matches(&outline_config.query, tree.root_node(), text.as_bytes());
     while let Some(query_match) = matches.next() {
         let mut name = None;
+        let mut name_start = tree_sitter::Point::default();
         let mut has_item = false;
         let mut context_keywords = Vec::new();
         for capture in query_match.captures {
@@ -116,6 +120,7 @@ fn symbols_in_tree(
             };
             if capture.index == outline_config.name_capture_ix {
                 name = Some(capture_text);
+                name_start = capture.node.start_position();
             } else if capture.index == outline_config.item_capture_ix {
                 has_item = true;
             } else if Some(capture.index) == outline_config.context_capture_ix {
@@ -135,6 +140,8 @@ fn symbols_in_tree(
         symbols.push(IndexedSymbol {
             name: name.into(),
             kind: SymbolKind::from_context_keywords(context_keywords),
+            row: name_start.row as u32,
+            column: name_start.column as u32,
         });
     }
     symbols

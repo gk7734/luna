@@ -30,6 +30,7 @@ picker.workspace = true
 picker_preview.workspace = true
 project.workspace = true
 settings.workspace = true
+symbol_index.workspace = true
 theme.workspace = true
 ui.workspace = true
 util.workspace = true
@@ -40,10 +41,11 @@ zed_actions.workspace = true
 ctor.workspace = true
 editor = { workspace = true, features = ["test-support"] }
 gpui = { workspace = true, features = ["test-support"] }
-
+language = { workspace = true, features = ["test-support"] }
 picker = { workspace = true, features = ["test-support"] }
 pretty_assertions.workspace = true
 serde_json.workspace = true
+symbol_index = { workspace = true, features = ["test-support"] }
 theme = { workspace = true, features = ["test-support"] }
 workspace = { workspace = true, features = ["test-support"] }
 zlog.workspace = true

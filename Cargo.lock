@@ -6432,6 +6432,7 @@ dependencies = [
  "project",
  "serde_json",
  "settings",
+ "symbol_index",
  "theme",
  "theme_settings",
  "ui",

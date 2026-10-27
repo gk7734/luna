@@ -11,14 +11,18 @@ pub struct SymbolIndexDb(ThreadSafeConnection);
 
 impl Domain for SymbolIndexDb {
     const NAME: &str = stringify!(SymbolIndexDb);
-    const MIGRATIONS: &[&str] = &[sql!(
-        CREATE TABLE IF NOT EXISTS symbol_index_files(
-            path TEXT NOT NULL PRIMARY KEY,
-            mtime INTEGER NOT NULL,
-            size INTEGER NOT NULL,
-            contents BLOB NOT NULL
-        ) STRICT;
-    )];
+    const MIGRATIONS: &[&str] = &[
+        sql!(
+            CREATE TABLE IF NOT EXISTS symbol_index_files(
+                path TEXT NOT NULL PRIMARY KEY,
+                mtime INTEGER NOT NULL,
+                size INTEGER NOT NULL,
+                contents BLOB NOT NULL
+            ) STRICT;
+        ),
+        // Symbols cached before they carried a position would all point at the top of their file.
+        sql!(DELETE FROM symbol_index_files;),
+    ];
 }
 
 db::static_connection!(SymbolIndexDb, []);

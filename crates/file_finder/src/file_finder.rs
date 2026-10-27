@@ -18,7 +18,7 @@ use gpui::{
     KeyContext, Modifiers, ModifiersChangedEvent, ParentElement, Render, Styled, Task, TaskExt,
     WeakEntity, Window, actions,
 };
-use language::{BufferSnapshot, Point};
+use language::{Bias, BufferSnapshot, Point};
 use open_path_prompt::{OpenPathPrompt, file_finder_settings::FileFinderSettings};
 use picker::{Picker, PickerDelegate};
 use project::{
@@ -37,6 +37,7 @@ use std::{
     },
     time::Duration,
 };
+use symbol_index::SymbolSearchMatch;
 use ui::{Checkbox, HighlightedLabel, ListItem, ListItemSpacing, Tooltip, prelude::*};
 use util::{
     ResultExt, maybe,
@@ -347,12 +348,31 @@ impl FileFinder {
                     }
                     Match::Search(m) => project_path_for_search_match(&delegate.project, &m.0, cx),
                     Match::CreateNew(p) => p.clone(),
+                    Match::Symbol(symbol) => ProjectPath {
+                        worktree_id: symbol.worktree_id,
+                        path: symbol.path.clone(),
+                    },
                     Match::Channel { .. } => return,
                 };
-                let open_task = workspace.update(cx, move |workspace, cx| {
+                let symbol_position = match m {
+                    Match::Symbol(symbol) => Some(Point::new(symbol.row, symbol.column)),
+                    _ => None,
+                };
+                let open_task = workspace.update(cx, |workspace, cx| {
                     workspace.split_path_preview(path, false, Some(split_direction), window, cx)
                 });
-                open_task.detach_and_log_err(cx);
+                cx.spawn_in(window, async move |_, cx| {
+                    let item = open_task.await?;
+                    if let Some(position) = symbol_position
+                        && let Some(editor) = item.downcast::<Editor>()
+                    {
+                        editor.update_in(cx, |editor, window, cx| {
+                            go_to_symbol_position(editor, position, window, cx)
+                        })?;
+                    }
+                    anyhow::Ok(())
+                })
+                .detach_and_log_err(cx);
             }
         })
     }
@@ -486,6 +506,7 @@ enum Match {
         string_match: StringMatch,
     },
     CreateNew(ProjectPath),
+    Symbol(SymbolSearchMatch),
 }
 
 impl Match {
@@ -493,7 +514,8 @@ impl Match {
         match self {
             Match::History { path, .. } => Some(&path.project.path),
             Match::Search(panel_match) => Some(&panel_match.0.path),
-            Match::Channel { .. } | Match::CreateNew(_) => None,
+            // Not the symbol's file: history entries are looked up by this path.
+            Match::Channel { .. } | Match::CreateNew(_) | Match::Symbol(_) => None,
         }
     }
 
@@ -507,6 +529,13 @@ impl Match {
                     .read(cx)
                     .absolutize(&path_match.path),
             ),
+            Match::Symbol(symbol) => Some(
+                project
+                    .read(cx)
+                    .worktree_for_id(symbol.worktree_id, cx)?
+                    .read(cx)
+                    .absolutize(&symbol.path),
+            ),
             Match::Channel { .. } | Match::CreateNew(_) => None,
         }
     }
@@ -515,7 +544,7 @@ impl Match {
         match self {
             Match::History { panel_match, .. } => panel_match.as_ref(),
             Match::Search(panel_match) => Some(panel_match),
-            Match::Channel { .. } | Match::CreateNew(_) => None,
+            Match::Channel { .. } | Match::CreateNew(_) | Match::Symbol(_) => None,
         }
     }
 }
@@ -528,7 +557,7 @@ impl SelectedMatch {
     fn new(m: Match) -> Option<Self> {
         match m {
             Match::History { .. } | Match::Search(_) => Some(Self(m)),
-            Match::Channel { .. } | Match::CreateNew(_) => None,
+            Match::Channel { .. } | Match::CreateNew(_) | Match::Symbol(_) => None,
         }
     }
 }
@@ -588,6 +617,12 @@ impl Matches {
                     Some(p) => path.project.path == *p,
                     None => false,
                 })
+                .ok_or(0)
+        } else if let Match::Symbol(symbol) = entry {
+            // Symbols with the same score tie, so a binary search could land on a neighbor.
+            self.matches
+                .iter()
+                .position(|m| matches!(m, Match::Symbol(other) if other == symbol))
                 .ok_or(0)
         } else {
             self.matches.binary_search_by(|m| {
@@ -683,6 +718,13 @@ impl Matches {
             _ => {}
         }
 
+        match (a, b) {
+            (Match::Symbol(a), Match::Symbol(b)) => return a.score.total_cmp(&b.score),
+            (Match::Symbol(_), _) => return cmp::Ordering::Less,
+            (_, Match::Symbol(_)) => return cmp::Ordering::Greater,
+            _ => {}
+        }
+
         match (&a, &b) {
             // bubble currently opened files to the top
             (Match::History { path, .. }, _) if Some(path) == currently_opened => {
@@ -722,6 +764,7 @@ impl Matches {
             Match::History { panel_match, .. } => panel_match.as_ref().map_or(0.0, |pm| pm.0.score),
             Match::Search(pm) => pm.0.score,
             Match::Channel { string_match, .. } => string_match.score,
+            Match::Symbol(symbol) => symbol.score,
             Match::CreateNew(_) => 0.0,
         }
     }
@@ -896,6 +939,10 @@ impl FoundPath {
 }
 
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(100);
+/// Like JetBrains' Search Everywhere, indexed declarations are listed under the files, so files
+/// are capped when there are some; otherwise weak fuzzy file matches would bury them.
+const FILE_MATCHES_ABOVE_SYMBOLS: usize = 20;
+const SYMBOL_MATCH_LIMIT: usize = 30;
 const WORKTREE_UPDATE_REFRESH_DEBOUNCE: Duration = Duration::from_millis(200);
 
 pub enum Event {
@@ -1121,12 +1168,19 @@ impl FileFinderDelegate {
             })
             .collect::<Vec<_>>();
 
+        // A line suffix (`main.rs:12`) means the query names a file.
+        let symbol_search = if query.path_position.row.is_none() {
+            symbol_index::search(&self.project, query.path_query(), SYMBOL_MATCH_LIMIT, cx)
+        } else {
+            Task::ready(Vec::new())
+        };
+
         let search_id = util::post_inc(&mut self.search_count);
         self.cancel_flag.store(true, atomic::Ordering::Release);
         self.cancel_flag = Arc::new(AtomicBool::new(false));
         let cancel_flag = self.cancel_flag.clone();
         cx.spawn_in(window, async move |picker, cx| {
-            let matches = fuzzy_nucleo::match_path_sets(
+            let path_search = fuzzy_nucleo::match_path_sets(
                 candidate_sets.as_slice(),
                 query.path_query(),
                 &relative_to,
@@ -1134,16 +1188,20 @@ impl FileFinderDelegate {
                 100,
                 &cancel_flag,
                 cx.background_executor().clone(),
-            )
-            .await
-            .into_iter()
-            .map(ProjectPanelOrdMatch);
+            );
+            let (matches, symbol_matches) = futures::join!(path_search, symbol_search);
+            let matches = matches.into_iter().map(ProjectPanelOrdMatch);
             let did_cancel = cancel_flag.load(atomic::Ordering::Acquire);
             picker
                 .update(cx, |picker, cx| {
-                    picker
-                        .delegate
-                        .set_search_matches(search_id, did_cancel, query, matches, cx)
+                    picker.delegate.set_search_matches(
+                        search_id,
+                        did_cancel,
+                        query,
+                        matches,
+                        symbol_matches,
+                        cx,
+                    )
                 })
                 .log_err();
         })
@@ -1155,6 +1213,7 @@ impl FileFinderDelegate {
         did_cancel: bool,
         query: FileSearchQuery,
         matches: impl IntoIterator<Item = ProjectPanelOrdMatch>,
+        symbol_matches: Vec<SymbolSearchMatch>,
         cx: &mut Context<Picker<Self>>,
     ) {
         if search_id >= self.latest_search_id {
@@ -1192,6 +1251,13 @@ impl FileFinderDelegate {
                 extend_old_matches,
                 path_style,
             );
+
+            if !symbol_matches.is_empty() {
+                self.matches.matches.truncate(FILE_MATCHES_ABOVE_SYMBOLS);
+                self.matches
+                    .matches
+                    .extend(symbol_matches.into_iter().map(Match::Symbol));
+            }
 
             // Add channel matches
             if let Some(channel_store) = &self.channel_store {
@@ -1397,6 +1463,12 @@ impl FileFinderDelegate {
                     String::from(""),
                     vec![],
                 ),
+                Match::Symbol(symbol) => (
+                    symbol.name.to_string(),
+                    symbol.positions.clone(),
+                    format!("{}:{}", symbol.path.display(path_style), symbol.row + 1),
+                    vec![],
+                ),
             };
 
         if file_name_positions.is_empty() {
@@ -1566,7 +1638,14 @@ impl FileFinderDelegate {
                 .update_in(cx, |picker, _, cx| {
                     let picker_delegate = &mut picker.delegate;
                     let search_id = util::post_inc(&mut picker_delegate.search_count);
-                    picker_delegate.set_search_matches(search_id, false, query, path_matches, cx);
+                    picker_delegate.set_search_matches(
+                        search_id,
+                        false,
+                        query,
+                        path_matches,
+                        Vec::new(),
+                        cx,
+                    );
 
                     anyhow::Ok(())
                 })
@@ -1724,10 +1803,23 @@ impl FileFinderDelegate {
                         project_path_for_search_match(workspace.project(), &path_match.0, cx);
                     split_or_open(workspace, project_path, window, cx)
                 }
+                Match::Symbol(symbol) => split_or_open(
+                    workspace,
+                    ProjectPath {
+                        worktree_id: symbol.worktree_id,
+                        path: symbol.path.clone(),
+                    },
+                    window,
+                    cx,
+                ),
                 Match::Channel { .. } => unreachable!("handled above"),
             }
         });
 
+        let symbol_position = match &m {
+            Match::Symbol(symbol) => Some(Point::new(symbol.row, symbol.column)),
+            _ => None,
+        };
         let selection_query = self.latest_search_query.clone();
         let finder = self.file_finder.clone();
         let workspace = self.workspace.clone();
@@ -1743,6 +1835,10 @@ impl FileFinderDelegate {
                         let Some(buffer) = editor.buffer().read(cx).as_singleton() else {
                             return;
                         };
+                        if let Some(position) = symbol_position {
+                            go_to_symbol_position(editor, position, window, cx);
+                            return;
+                        }
                         let buffer_snapshot = buffer.read(cx).snapshot();
                         let Some(selection_query) = selection_query.as_ref() else {
                             return;
@@ -1792,7 +1888,7 @@ impl FileFinderDelegate {
                     path: Arc::clone(&path.project.path),
                 }),
                 Match::Search(m) => Some(project_path_for_search_match(&self.project, &m.0, cx)),
-                Match::Channel { .. } | Match::CreateNew(_) => None,
+                Match::Channel { .. } | Match::CreateNew(_) | Match::Symbol(_) => None,
             })
             .collect();
         if paths.is_empty() {
@@ -1826,6 +1922,20 @@ impl FileFinderDelegate {
     }
 }
 
+/// The file may have changed since it was indexed, so the position is clipped to what's there now.
+fn go_to_symbol_position(
+    editor: &mut Editor,
+    position: Point,
+    window: &mut Window,
+    cx: &mut Context<Editor>,
+) {
+    let Some(buffer) = editor.buffer().read(cx).as_singleton() else {
+        return;
+    };
+    let position = buffer.read(cx).snapshot().clip_point(position, Bias::Left);
+    editor.go_to_singleton_buffer_range(position..position, window, cx);
+}
+
 fn full_path_budget(
     file_name: &str,
     normal_em: Pixels,
@@ -1843,7 +1953,7 @@ impl PickerDelegate for FileFinderDelegate {
     }
 
     fn placeholder_text(&self, _window: &mut Window, _cx: &mut App) -> Arc<str> {
-        "Search project files...".into()
+        "Search files and symbols...".into()
     }
 
     fn searchbar_trailer(
@@ -1903,6 +2013,7 @@ impl PickerDelegate for FileFinderDelegate {
     }
 
     fn separators_after_indices(&self) -> Vec<usize> {
+        let mut separators = Vec::new();
         if self.separate_history {
             let first_non_history_index = self
                 .matches
@@ -1914,10 +2025,21 @@ impl PickerDelegate for FileFinderDelegate {
             if let Some(first_non_history_index) = first_non_history_index
                 && first_non_history_index > 0
             {
-                return vec![first_non_history_index - 1];
+                separators.push(first_non_history_index - 1);
             }
         }
-        Vec::new()
+        let first_symbol_index = self
+            .matches
+            .matches
+            .iter()
+            .position(|m| matches!(m, Match::Symbol(_)));
+        if let Some(first_symbol_index) = first_symbol_index
+            && first_symbol_index > 0
+            && !separators.contains(&(first_symbol_index - 1))
+        {
+            separators.push(first_symbol_index - 1);
+        }
+        separators
     }
 
     fn update_matches(
@@ -2121,6 +2243,14 @@ impl PickerDelegate for FileFinderDelegate {
                 message.push_plain("?");
                 Some(picker::PreviewUpdate::message(message.build()))
             }
+            Match::Symbol(symbol) => {
+                let start = Point::new(symbol.row, symbol.column);
+                let end = Point::new(symbol.row, symbol.column + symbol.name.len() as u32);
+                Some(picker::PreviewUpdate::from_path_range(
+                    m.abs_path(&self.project, cx)?,
+                    start..end,
+                ))
+            }
             _ => Some(picker::PreviewUpdate::from_path(
                 m.abs_path(&self.project, cx)?,
             )),
@@ -2188,6 +2318,11 @@ impl FileFinderDelegate {
         let start_icon = match path_match {
             Match::CreateNew(_) => Some(Icon::new(IconName::Plus).size(IconSize::Small)),
             Match::Channel { .. } => Some(Icon::new(IconName::Hash).color(Color::Muted)),
+            Match::Symbol(_) => Some(
+                Icon::new(IconName::Code)
+                    .size(IconSize::Small)
+                    .color(Color::Muted),
+            ),
             _ => maybe!({
                 if !settings.file_icons {
                     return None;
@@ -2200,7 +2335,10 @@ impl FileFinderDelegate {
         };
 
         let checkbox = checkbox.map(|checkbox| {
-            if matches!(path_match, Match::CreateNew(_) | Match::Channel { .. }) {
+            if matches!(
+                path_match,
+                Match::CreateNew(_) | Match::Channel { .. } | Match::Symbol(_)
+            ) {
                 div()
                     .flex_none()
                     .size(Checkbox::container_size())
@@ -2232,6 +2370,12 @@ impl FileFinderDelegate {
                 div()
                     .flex_none()
                     .size(IconSize::Small.rems())
+                    .into_any_element(),
+            ),
+            Match::Symbol(symbol) => Some(
+                Label::new(symbol.kind.label())
+                    .size(LabelSize::Small)
+                    .color(Color::Muted)
                     .into_any_element(),
             ),
             Match::CreateNew(_) => None,

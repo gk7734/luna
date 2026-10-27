@@ -81,6 +81,53 @@ async fn test_indexes_project_symbols(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_search_finds_every_declaration_with_its_position(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/root"),
+        json!({
+            "src": {
+                "circle.rs": "struct Circle;\n\nimpl Circle {\n    fn render_shape() {}\n}\n",
+                "square.rs": "fn render_shape() {}\n",
+                "unrelated.rs": "fn parse_header() {}\n",
+            }
+        }),
+    )
+    .await;
+    let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
+    project.read_with(cx, |project, _| project.languages().add(rust_lang()));
+    cx.run_until_parked();
+
+    let matches = cx.update(|cx| search(&project, "rendshape", 20, cx)).await;
+    let locations = matches
+        .iter()
+        .map(|found| {
+            (
+                &*found.name,
+                found.path.as_unix_str(),
+                found.row,
+                found.column,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        locations,
+        vec![
+            ("render_shape", "src/circle.rs", 3, 7),
+            ("render_shape", "src/square.rs", 0, 3),
+        ]
+    );
+    assert_eq!(matches[0].kind, SymbolKind::Function);
+    assert_eq!(matches[0].positions.first(), Some(&0));
+    assert!(
+        cx.update(|cx| search(&project, "", 20, cx))
+            .await
+            .is_empty()
+    );
+}
+
+#[gpui::test]
 async fn test_indexing_setting_pauses_index(cx: &mut TestAppContext) {
     init_test(cx);
     cx.update(|cx| {
@@ -198,6 +245,8 @@ async fn test_unchanged_files_reuse_cached_results(cx: &mut TestAppContext) {
         symbols: vec![IndexedSymbol {
             name: "cached_symbol".into(),
             kind: SymbolKind::Function,
+            row: 0,
+            column: 0,
         }],
         todos: Vec::new(),
     };
