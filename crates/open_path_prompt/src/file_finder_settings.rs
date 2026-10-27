@@ -9,6 +9,7 @@ pub struct FileFinderSettings {
     pub include_ignored: Option<bool>,
     pub include_channels: bool,
     pub prefill_query_from_selection: bool,
+    pub include_symbols_and_text: bool,
 }
 
 impl Settings for FileFinderSettings {
@@ -26,6 +27,7 @@ impl Settings for FileFinderSettings {
             },
             include_channels: file_finder.include_channels.unwrap(),
             prefill_query_from_selection: file_finder.prefill_query_from_selection.unwrap(),
+            include_symbols_and_text: file_finder.include_symbols_and_text.unwrap(),
         }
     }
 }

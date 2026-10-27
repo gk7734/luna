@@ -18,11 +18,13 @@ use gpui::{
     KeyContext, Modifiers, ModifiersChangedEvent, ParentElement, Render, Styled, Task, TaskExt,
     WeakEntity, Window, actions,
 };
-use language::{Bias, BufferSnapshot, Point};
+use language::{Anchor, Bias, Buffer, BufferSnapshot, Point, ToPoint as _};
 use open_path_prompt::{OpenPathPrompt, file_finder_settings::FileFinderSettings};
 use picker::{Picker, PickerDelegate};
 use project::{
-    PathMatchCandidateSet, Project, ProjectPath, WorktreeId, worktree_store::WorktreeStore,
+    PathMatchCandidateSet, Project, ProjectPath, SearchResults, WorktreeId,
+    search::{SearchQuery, SearchResult},
+    worktree_store::WorktreeStore,
 };
 
 use settings::{ModalWidthContent, SeedQuerySetting, Settings, SettingsStore};
@@ -41,7 +43,7 @@ use symbol_index::SymbolSearchMatch;
 use ui::{Checkbox, HighlightedLabel, ListItem, ListItemSpacing, Tooltip, prelude::*};
 use util::{
     ResultExt, maybe,
-    paths::{PathStyle, PathWithPosition},
+    paths::{PathMatcher, PathStyle, PathWithPosition},
     post_inc,
     rel_path::RelPath,
 };
@@ -348,26 +350,28 @@ impl FileFinder {
                     }
                     Match::Search(m) => project_path_for_search_match(&delegate.project, &m.0, cx),
                     Match::CreateNew(p) => p.clone(),
-                    Match::Symbol(symbol) => ProjectPath {
-                        worktree_id: symbol.worktree_id,
-                        path: symbol.path.clone(),
+                    Match::Symbol(SymbolSearchMatch {
+                        worktree_id, path, ..
+                    })
+                    | Match::Text(TextLineMatch {
+                        worktree_id, path, ..
+                    }) => ProjectPath {
+                        worktree_id: *worktree_id,
+                        path: path.clone(),
                     },
                     Match::Channel { .. } => return,
                 };
-                let symbol_position = match m {
-                    Match::Symbol(symbol) => Some(Point::new(symbol.row, symbol.column)),
-                    _ => None,
-                };
+                let position_in_file = m.position_in_file();
                 let open_task = workspace.update(cx, |workspace, cx| {
                     workspace.split_path_preview(path, false, Some(split_direction), window, cx)
                 });
                 cx.spawn_in(window, async move |_, cx| {
                     let item = open_task.await?;
-                    if let Some(position) = symbol_position
+                    if let Some(position) = position_in_file
                         && let Some(editor) = item.downcast::<Editor>()
                     {
                         editor.update_in(cx, |editor, window, cx| {
-                            go_to_symbol_position(editor, position, window, cx)
+                            go_to_position_in_file(editor, position, window, cx)
                         })?;
                     }
                     anyhow::Ok(())
@@ -452,6 +456,11 @@ pub struct FileFinderDelegate {
     include_ignored: Option<bool>,
     include_ignored_refresh: Task<()>,
     debounce_next_refresh: bool,
+    /// Lines containing the query, found by a project search that streams in after the file
+    /// matches, so they're kept apart and placed again whenever the file matches change.
+    text_matches: Vec<TextLineMatch>,
+    text_search_query: Option<String>,
+    text_search: Task<()>,
 }
 
 /// Use a custom ordering for file finder: the regular one
@@ -507,6 +516,20 @@ enum Match {
     },
     CreateNew(ProjectPath),
     Symbol(SymbolSearchMatch),
+    Text(TextLineMatch),
+}
+
+/// A line containing the query, like a result in JetBrains' Search Everywhere Text tab.
+#[derive(Debug, Clone, PartialEq)]
+struct TextLineMatch {
+    worktree_id: WorktreeId,
+    path: Arc<RelPath>,
+    row: u32,
+    /// Byte columns of the first occurrence on the line.
+    columns: Range<u32>,
+    line: String,
+    /// Byte offsets in `line` of every occurrence's characters, for highlighting.
+    positions: Vec<usize>,
 }
 
 impl Match {
@@ -515,7 +538,7 @@ impl Match {
             Match::History { path, .. } => Some(&path.project.path),
             Match::Search(panel_match) => Some(&panel_match.0.path),
             // Not the symbol's file: history entries are looked up by this path.
-            Match::Channel { .. } | Match::CreateNew(_) | Match::Symbol(_) => None,
+            Match::Channel { .. } | Match::CreateNew(_) | Match::Symbol(_) | Match::Text(_) => None,
         }
     }
 
@@ -536,7 +559,26 @@ impl Match {
                     .read(cx)
                     .absolutize(&symbol.path),
             ),
+            Match::Text(text_match) => Some(
+                project
+                    .read(cx)
+                    .worktree_for_id(text_match.worktree_id, cx)?
+                    .read(cx)
+                    .absolutize(&text_match.path),
+            ),
             Match::Channel { .. } | Match::CreateNew(_) => None,
+        }
+    }
+
+    /// Where to put the cursor once the file opens, for matches inside a file.
+    fn position_in_file(&self) -> Option<Point> {
+        match self {
+            Match::Symbol(symbol) => Some(Point::new(symbol.row, symbol.column)),
+            Match::Text(text_match) => Some(Point::new(text_match.row, text_match.columns.start)),
+            Match::History { .. }
+            | Match::Search(_)
+            | Match::Channel { .. }
+            | Match::CreateNew(_) => None,
         }
     }
 
@@ -544,7 +586,7 @@ impl Match {
         match self {
             Match::History { panel_match, .. } => panel_match.as_ref(),
             Match::Search(panel_match) => Some(panel_match),
-            Match::Channel { .. } | Match::CreateNew(_) | Match::Symbol(_) => None,
+            Match::Channel { .. } | Match::CreateNew(_) | Match::Symbol(_) | Match::Text(_) => None,
         }
     }
 }
@@ -557,7 +599,7 @@ impl SelectedMatch {
     fn new(m: Match) -> Option<Self> {
         match m {
             Match::History { .. } | Match::Search(_) => Some(Self(m)),
-            Match::Channel { .. } | Match::CreateNew(_) | Match::Symbol(_) => None,
+            Match::Channel { .. } | Match::CreateNew(_) | Match::Symbol(_) | Match::Text(_) => None,
         }
     }
 }
@@ -618,11 +660,15 @@ impl Matches {
                     None => false,
                 })
                 .ok_or(0)
-        } else if let Match::Symbol(symbol) = entry {
-            // Symbols with the same score tie, so a binary search could land on a neighbor.
+        } else if matches!(entry, Match::Symbol(_) | Match::Text(_)) {
+            // These tie on score, so a binary search could land on a neighbor.
             self.matches
                 .iter()
-                .position(|m| matches!(m, Match::Symbol(other) if other == symbol))
+                .position(|m| match (m, entry) {
+                    (Match::Symbol(a), Match::Symbol(b)) => a == b,
+                    (Match::Text(a), Match::Text(b)) => a == b,
+                    _ => false,
+                })
                 .ok_or(0)
         } else {
             self.matches.binary_search_by(|m| {
@@ -719,6 +765,13 @@ impl Matches {
         }
 
         match (a, b) {
+            (Match::Text(_), Match::Text(_)) => return cmp::Ordering::Equal,
+            (Match::Text(_), _) => return cmp::Ordering::Less,
+            (_, Match::Text(_)) => return cmp::Ordering::Greater,
+            _ => {}
+        }
+
+        match (a, b) {
             (Match::Symbol(a), Match::Symbol(b)) => return a.score.total_cmp(&b.score),
             (Match::Symbol(_), _) => return cmp::Ordering::Less,
             (_, Match::Symbol(_)) => return cmp::Ordering::Greater,
@@ -765,7 +818,7 @@ impl Matches {
             Match::Search(pm) => pm.0.score,
             Match::Channel { string_match, .. } => string_match.score,
             Match::Symbol(symbol) => symbol.score,
-            Match::CreateNew(_) => 0.0,
+            Match::Text(_) | Match::CreateNew(_) => 0.0,
         }
     }
 }
@@ -943,6 +996,11 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(100);
 /// are capped when there are some; otherwise weak fuzzy file matches would bury them.
 const FILE_MATCHES_ABOVE_SYMBOLS: usize = 20;
 const SYMBOL_MATCH_LIMIT: usize = 30;
+const TEXT_MATCH_LIMIT: usize = 50;
+/// One character matches most lines of a project, so text search waits for a second.
+const TEXT_SEARCH_MIN_QUERY_CHARS: usize = 2;
+/// Long lines, like minified code, are cut around the match so it stays visible.
+const TEXT_MATCH_CONTEXT_CHARS: usize = 40;
 const WORKTREE_UPDATE_REFRESH_DEBOUNCE: Duration = Duration::from_millis(200);
 
 pub enum Event {
@@ -1094,6 +1152,9 @@ impl FileFinderDelegate {
             include_ignored: include_ignored.or(FileFinderSettings::get_global(cx).include_ignored),
             include_ignored_refresh: Task::ready(()),
             debounce_next_refresh: false,
+            text_matches: Vec::new(),
+            text_search_query: None,
+            text_search: Task::ready(()),
         }
     }
 
@@ -1168,12 +1229,14 @@ impl FileFinderDelegate {
             })
             .collect::<Vec<_>>();
 
+        let include_symbols_and_text = FileFinderSettings::get_global(cx).include_symbols_and_text;
         // A line suffix (`main.rs:12`) means the query names a file.
-        let symbol_search = if query.path_position.row.is_none() {
+        let symbol_search = if include_symbols_and_text && query.path_position.row.is_none() {
             symbol_index::search(&self.project, query.path_query(), SYMBOL_MATCH_LIMIT, cx)
         } else {
             Task::ready(Vec::new())
         };
+        self.start_text_search(&query, window, cx);
 
         let search_id = util::post_inc(&mut self.search_count);
         self.cancel_flag.store(true, atomic::Ordering::Release);
@@ -1367,6 +1430,7 @@ impl FileFinderDelegate {
                 }
             }
 
+            self.place_text_matches();
             self.prepend_selected_matches();
 
             self.selected_index = if !self.selected_matches.is_empty() {
@@ -1388,6 +1452,157 @@ impl FileFinderDelegate {
 
             cx.notify();
         }
+    }
+
+    /// Restarts the project text search when the query changed. Refreshes for file changes keep
+    /// the running one, so results already streamed in don't flicker away.
+    fn start_text_search(
+        &mut self,
+        query: &FileSearchQuery,
+        window: &mut Window,
+        cx: &mut Context<Picker<Self>>,
+    ) {
+        let text_query = query.path_query().to_string();
+        if self.text_search_query.as_deref() == Some(text_query.as_str()) {
+            return;
+        }
+        self.text_matches.clear();
+        self.text_search_query = None;
+        self.text_search = Task::ready(());
+        if !FileFinderSettings::get_global(cx).include_symbols_and_text
+            || query.path_position.row.is_some()
+            || text_query.chars().count() < TEXT_SEARCH_MIN_QUERY_CHARS
+        {
+            return;
+        }
+        let Some(search_query) = SearchQuery::text(
+            &text_query,
+            false,
+            false,
+            false,
+            PathMatcher::default(),
+            PathMatcher::default(),
+            false,
+            None,
+        )
+        .log_err() else {
+            return;
+        };
+        let search = self
+            .project
+            .update(cx, |project, cx| project.search(search_query, cx));
+        self.text_search_query = Some(text_query.clone());
+        self.text_search = cx.spawn_in(window, async move |picker, cx| {
+            // Dropping the handle stops the search once enough lines are in.
+            let SearchResults {
+                task_handle: _search,
+                rx,
+            } = search;
+            while let Ok(result) = rx.recv().await {
+                let (buffer, ranges) = match result {
+                    SearchResult::Buffer { buffer, ranges } => (buffer, ranges),
+                    SearchResult::LimitReached => break,
+                    SearchResult::WaitingForScan | SearchResult::Searching => continue,
+                };
+                let wants_more = picker
+                    .update(cx, |picker, cx| {
+                        picker
+                            .delegate
+                            .add_text_matches(&text_query, &buffer, &ranges, cx)
+                    })
+                    .unwrap_or(false);
+                if !wants_more {
+                    break;
+                }
+            }
+        });
+    }
+
+    /// Returns whether the search should keep going.
+    fn add_text_matches(
+        &mut self,
+        text_query: &str,
+        buffer: &Entity<Buffer>,
+        ranges: &[Range<Anchor>],
+        cx: &mut Context<Picker<Self>>,
+    ) -> bool {
+        if self.text_search_query.as_deref() != Some(text_query) {
+            return false;
+        }
+        let buffer = buffer.read(cx);
+        let Some(file) = buffer.file() else {
+            return true;
+        };
+        let worktree_id = file.worktree_id(cx);
+        let path = file.path().clone();
+        let snapshot = buffer.snapshot();
+
+        let mut occurrences_by_row: Vec<(u32, Vec<Range<u32>>)> = Vec::new();
+        for range in ranges {
+            let start = range.start.to_point(&snapshot);
+            let end = range.end.to_point(&snapshot);
+            let end_column = if end.row == start.row {
+                end.column
+            } else {
+                snapshot.line_len(start.row)
+            };
+            match occurrences_by_row.last_mut() {
+                Some((row, occurrences)) if *row == start.row => {
+                    occurrences.push(start.column..end_column)
+                }
+                _ => occurrences_by_row.push((start.row, vec![start.column..end_column])),
+            }
+        }
+        for (row, occurrences) in occurrences_by_row {
+            if self.text_matches.len() >= TEXT_MATCH_LIMIT {
+                break;
+            }
+            let line = snapshot
+                .text_for_range(Point::new(row, 0)..Point::new(row, snapshot.line_len(row)))
+                .collect::<String>();
+            if let Some(text_match) =
+                text_line_match(worktree_id, path.clone(), row, &line, &occurrences)
+            {
+                self.text_matches.push(text_match);
+            }
+        }
+        self.place_text_matches();
+        cx.notify();
+        self.text_matches.len() < TEXT_MATCH_LIMIT
+    }
+
+    /// Text matches go under the files and symbols, above the create-file entry.
+    fn place_text_matches(&mut self) {
+        self.matches
+            .matches
+            .retain(|m| !matches!(m, Match::Text(_)));
+        if self.text_matches.is_empty() {
+            return;
+        }
+        let first_non_file_index = self
+            .matches
+            .matches
+            .iter()
+            .position(|m| matches!(m, Match::Symbol(_) | Match::CreateNew(_)))
+            .unwrap_or(self.matches.len());
+        if first_non_file_index > FILE_MATCHES_ABOVE_SYMBOLS {
+            self.matches
+                .matches
+                .drain(FILE_MATCHES_ABOVE_SYMBOLS..first_non_file_index);
+        }
+        let insert_index = self
+            .matches
+            .matches
+            .iter()
+            .position(|m| matches!(m, Match::CreateNew(_)))
+            .unwrap_or(self.matches.len());
+        self.matches.matches.splice(
+            insert_index..insert_index,
+            self.text_matches.iter().cloned().map(Match::Text),
+        );
+        self.selected_index = self
+            .selected_index
+            .min(self.matches.len().saturating_sub(1));
     }
 
     fn labels_for_match(
@@ -1467,6 +1682,16 @@ impl FileFinderDelegate {
                     symbol.name.to_string(),
                     symbol.positions.clone(),
                     format!("{}:{}", symbol.path.display(path_style), symbol.row + 1),
+                    vec![],
+                ),
+                Match::Text(text_match) => (
+                    text_match.line.clone(),
+                    text_match.positions.clone(),
+                    format!(
+                        "{}:{}",
+                        text_match.path.display(path_style),
+                        text_match.row + 1
+                    ),
                     vec![],
                 ),
             };
@@ -1803,11 +2028,16 @@ impl FileFinderDelegate {
                         project_path_for_search_match(workspace.project(), &path_match.0, cx);
                     split_or_open(workspace, project_path, window, cx)
                 }
-                Match::Symbol(symbol) => split_or_open(
+                Match::Symbol(SymbolSearchMatch {
+                    worktree_id, path, ..
+                })
+                | Match::Text(TextLineMatch {
+                    worktree_id, path, ..
+                }) => split_or_open(
                     workspace,
                     ProjectPath {
-                        worktree_id: symbol.worktree_id,
-                        path: symbol.path.clone(),
+                        worktree_id: *worktree_id,
+                        path: path.clone(),
                     },
                     window,
                     cx,
@@ -1816,10 +2046,7 @@ impl FileFinderDelegate {
             }
         });
 
-        let symbol_position = match &m {
-            Match::Symbol(symbol) => Some(Point::new(symbol.row, symbol.column)),
-            _ => None,
-        };
+        let position_in_file = m.position_in_file();
         let selection_query = self.latest_search_query.clone();
         let finder = self.file_finder.clone();
         let workspace = self.workspace.clone();
@@ -1835,8 +2062,8 @@ impl FileFinderDelegate {
                         let Some(buffer) = editor.buffer().read(cx).as_singleton() else {
                             return;
                         };
-                        if let Some(position) = symbol_position {
-                            go_to_symbol_position(editor, position, window, cx);
+                        if let Some(position) = position_in_file {
+                            go_to_position_in_file(editor, position, window, cx);
                             return;
                         }
                         let buffer_snapshot = buffer.read(cx).snapshot();
@@ -1888,7 +2115,9 @@ impl FileFinderDelegate {
                     path: Arc::clone(&path.project.path),
                 }),
                 Match::Search(m) => Some(project_path_for_search_match(&self.project, &m.0, cx)),
-                Match::Channel { .. } | Match::CreateNew(_) | Match::Symbol(_) => None,
+                Match::Channel { .. } | Match::CreateNew(_) | Match::Symbol(_) | Match::Text(_) => {
+                    None
+                }
             })
             .collect();
         if paths.is_empty() {
@@ -1922,8 +2151,9 @@ impl FileFinderDelegate {
     }
 }
 
-/// The file may have changed since it was indexed, so the position is clipped to what's there now.
-fn go_to_symbol_position(
+/// The file may have changed since the match was found, so the position is clipped to what's
+/// there now.
+fn go_to_position_in_file(
     editor: &mut Editor,
     position: Point,
     window: &mut Window,
@@ -1934,6 +2164,55 @@ fn go_to_symbol_position(
     };
     let position = buffer.read(cx).snapshot().clip_point(position, Bias::Left);
     editor.go_to_singleton_buffer_range(position..position, window, cx);
+}
+
+fn text_line_match(
+    worktree_id: WorktreeId,
+    path: Arc<RelPath>,
+    row: u32,
+    line: &str,
+    occurrences: &[Range<u32>],
+) -> Option<TextLineMatch> {
+    let first = occurrences.first()?.clone();
+    let line = line.trim_end();
+    let indent = line.len() - line.trim_start().len();
+    let first_start = (first.start as usize).min(line.len());
+    let context_start = line
+        .get(..first_start)?
+        .char_indices()
+        .rev()
+        .nth(TEXT_MATCH_CONTEXT_CHARS - 1)
+        .map_or(0, |(index, _)| index);
+    let display_start = context_start.max(indent);
+    let display_end = line
+        .get(first_start..)?
+        .char_indices()
+        .nth(TEXT_MATCH_CONTEXT_CHARS * 3)
+        .map_or(line.len(), |(index, _)| first_start + index);
+    let prefix = if display_start > indent { "…" } else { "" };
+    let suffix = if display_end < line.len() { "…" } else { "" };
+
+    let mut positions = Vec::new();
+    for occurrence in occurrences {
+        let start = (occurrence.start as usize).max(display_start);
+        let end = (occurrence.end as usize).min(display_end);
+        let Some(occurrence_text) = line.get(start..end) else {
+            continue;
+        };
+        positions.extend(
+            occurrence_text
+                .char_indices()
+                .map(|(index, _)| start + index - display_start + prefix.len()),
+        );
+    }
+    Some(TextLineMatch {
+        worktree_id,
+        path,
+        row,
+        columns: first,
+        line: format!("{prefix}{}{suffix}", line.get(display_start..display_end)?),
+        positions,
+    })
 }
 
 fn full_path_budget(
@@ -1953,7 +2232,7 @@ impl PickerDelegate for FileFinderDelegate {
     }
 
     fn placeholder_text(&self, _window: &mut Window, _cx: &mut App) -> Arc<str> {
-        "Search files and symbols...".into()
+        "Search files, symbols and text...".into()
     }
 
     fn searchbar_trailer(
@@ -2028,16 +2307,17 @@ impl PickerDelegate for FileFinderDelegate {
                 separators.push(first_non_history_index - 1);
             }
         }
-        let first_symbol_index = self
-            .matches
-            .matches
-            .iter()
-            .position(|m| matches!(m, Match::Symbol(_)));
-        if let Some(first_symbol_index) = first_symbol_index
-            && first_symbol_index > 0
-            && !separators.contains(&(first_symbol_index - 1))
-        {
-            separators.push(first_symbol_index - 1);
+        for is_group_start in [
+            |m: &Match| matches!(m, Match::Symbol(_)),
+            |m: &Match| matches!(m, Match::Text(_)),
+        ] {
+            let group_start = self.matches.matches.iter().position(is_group_start);
+            if let Some(group_start) = group_start
+                && group_start > 0
+                && !separators.contains(&(group_start - 1))
+            {
+                separators.push(group_start - 1);
+            }
         }
         separators
     }
@@ -2075,6 +2355,9 @@ impl PickerDelegate for FileFinderDelegate {
         };
 
         if raw_query.is_empty() {
+            self.text_matches.clear();
+            self.text_search_query = None;
+            self.text_search = Task::ready(());
             // if there was no query before, and we already have some (history) matches
             // there's no need to update anything, since nothing has changed.
             // We also want to populate matches set from history entries on the first update.
@@ -2251,6 +2534,14 @@ impl PickerDelegate for FileFinderDelegate {
                     start..end,
                 ))
             }
+            Match::Text(text_match) => {
+                let start = Point::new(text_match.row, text_match.columns.start);
+                let end = Point::new(text_match.row, text_match.columns.end);
+                Some(picker::PreviewUpdate::from_path_range(
+                    m.abs_path(&self.project, cx)?,
+                    start..end,
+                ))
+            }
             _ => Some(picker::PreviewUpdate::from_path(
                 m.abs_path(&self.project, cx)?,
             )),
@@ -2323,6 +2614,11 @@ impl FileFinderDelegate {
                     .size(IconSize::Small)
                     .color(Color::Muted),
             ),
+            Match::Text(_) => Some(
+                Icon::new(IconName::MagnifyingGlass)
+                    .size(IconSize::Small)
+                    .color(Color::Muted),
+            ),
             _ => maybe!({
                 if !settings.file_icons {
                     return None;
@@ -2337,7 +2633,7 @@ impl FileFinderDelegate {
         let checkbox = checkbox.map(|checkbox| {
             if matches!(
                 path_match,
-                Match::CreateNew(_) | Match::Channel { .. } | Match::Symbol(_)
+                Match::CreateNew(_) | Match::Channel { .. } | Match::Symbol(_) | Match::Text(_)
             ) {
                 div()
                     .flex_none()
@@ -2366,7 +2662,7 @@ impl FileFinderDelegate {
                     .size(IconSize::Small)
                     .into_any_element(),
             ),
-            Match::Search(_) | Match::Channel { .. } => Some(
+            Match::Search(_) | Match::Channel { .. } | Match::Text(_) => Some(
                 div()
                     .flex_none()
                     .size(IconSize::Small.rems())

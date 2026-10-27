@@ -996,6 +996,11 @@ pub struct FileFinderSettingsContent {
     ///
     /// Default: true
     pub prefill_query_from_selection: Option<bool>,
+    /// Whether to also list indexed symbols and lines containing the query under the files,
+    /// like JetBrains' Search Everywhere.
+    ///
+    /// Default: true
+    pub include_symbols_and_text: Option<bool>,
 }
 
 #[derive(

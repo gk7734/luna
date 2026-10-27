@@ -4013,7 +4013,7 @@ fn search_and_files_page() -> SettingsPage {
         ]
     }
 
-    fn file_finder_section() -> [SettingsPageItem; 5] {
+    fn file_finder_section() -> [SettingsPageItem; 6] {
         [
             SettingsPageItem::SectionHeader("File Finder"),
             // todo: null by default
@@ -4100,6 +4100,29 @@ fn search_and_files_page() -> SettingsPage {
                             .file_finder
                             .get_or_insert_default()
                             .prefill_query_from_selection = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Include Symbols And Text",
+                description: "Whether to also list indexed symbols and lines containing the query under the files, like JetBrains' Search Everywhere.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("file_finder.include_symbols_and_text"),
+                    pick: |settings_content| {
+                        settings_content
+                            .file_finder
+                            .as_ref()?
+                            .include_symbols_and_text
+                            .as_ref()
+                    },
+                    write: |settings_content, value, _| {
+                        settings_content
+                            .file_finder
+                            .get_or_insert_default()
+                            .include_symbols_and_text = value;
                     },
                 }),
                 metadata: None,

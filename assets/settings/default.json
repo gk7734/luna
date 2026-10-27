@@ -1607,6 +1607,11 @@
     //
     // Default: true
     "prefill_query_from_selection": true,
+    // Whether to also list indexed symbols and lines containing the query under the files,
+    // like JetBrains' Search Everywhere.
+    //
+    // Default: true
+    "include_symbols_and_text": true,
   },
   // Whether or not to remove any trailing whitespace from lines of a buffer
   // before saving it.

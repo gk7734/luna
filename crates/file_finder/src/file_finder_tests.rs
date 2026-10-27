@@ -524,7 +524,10 @@ async fn test_row_column_numbers_query_inside_file(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn test_indexed_symbols_listed_under_files_and_open_at_declaration(cx: &mut TestAppContext) {
     let app_state = init_test(cx);
-    cx.update(symbol_index::init);
+    cx.update(|cx| {
+        set_include_symbols_and_text(true, cx);
+        symbol_index::init(cx);
+    });
     let fs = app_state.fs.as_fake();
     fs.insert_tree(path!("/src"), json!({})).await;
     let project = Project::test(app_state.fs.clone(), [path!("/src").as_ref()], cx).await;
@@ -585,6 +588,79 @@ async fn test_indexed_symbols_listed_under_files_and_open_at_declaration(cx: &mu
         assert_eq!(selections[0].start, Point::new(3, 7));
         assert_eq!(selections[0].start, selections[0].end);
     });
+}
+
+#[gpui::test]
+async fn test_lines_containing_query_listed_and_open_at_occurrence(cx: &mut TestAppContext) {
+    let app_state = init_test(cx);
+    cx.update(|cx| set_include_symbols_and_text(true, cx));
+    app_state
+        .fs
+        .as_fake()
+        .insert_tree(
+            path!("/src"),
+            json!({
+                "dialog.tsx": "export function Dialog() {\n  return <Button title=\"확인\" />;\n}\n",
+                "notes.md": "nothing to see\n",
+            }),
+        )
+        .await;
+    let project = Project::test(app_state.fs.clone(), [path!("/src").as_ref()], cx).await;
+
+    let (picker, workspace, cx) = build_find_picker(project, cx);
+    simulate_input(cx, "확인");
+    picker.update(cx, |finder, _| {
+        let text_matches = finder
+            .delegate
+            .matches
+            .matches
+            .iter()
+            .filter_map(|m| match m {
+                Match::Text(text_match) => Some(text_match),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(text_matches.len(), 1, "{:?}", finder.delegate.matches);
+        let text_match = text_matches[0];
+        assert_eq!(text_match.path.as_unix_str(), "dialog.tsx");
+        assert_eq!(text_match.row, 1);
+        assert_eq!(text_match.line, "return <Button title=\"확인\" />;");
+        assert_eq!(text_match.positions, vec![22, 25]);
+        assert!(
+            matches!(finder.delegate.matches.get(0), Some(Match::Text(_))),
+            "without matching files, the first line is selected"
+        );
+    });
+
+    cx.dispatch_action(Confirm);
+    cx.run_until_parked();
+    let editor = cx.update(|_, cx| workspace.read(cx).active_item_as::<Editor>(cx).unwrap());
+    editor.update(cx, |editor, cx| {
+        assert_eq!(editor.title(cx), "dialog.tsx");
+        let selections = editor.selections.all_adjusted(&editor.display_snapshot(cx));
+        assert_eq!(selections[0].start, Point::new(1, 24));
+    });
+}
+
+#[test]
+fn test_text_line_match_trims_long_lines_around_the_occurrence() {
+    let line = format!("{}needle{}", "a".repeat(100), "b".repeat(200));
+    let text_match = text_line_match(
+        WorktreeId::from_usize(1),
+        rel_path("long.txt").into(),
+        0,
+        &line,
+        &[100..106],
+    )
+    .expect("the occurrence is on the line");
+    let expected_start = format!("…{}needle", "a".repeat(TEXT_MATCH_CONTEXT_CHARS));
+    assert!(text_match.line.starts_with(&expected_start));
+    assert!(text_match.line.ends_with('…'));
+    let needle_start = "…".len() + TEXT_MATCH_CONTEXT_CHARS;
+    assert_eq!(
+        text_match.positions,
+        (needle_start..needle_start + 6).collect::<Vec<_>>()
+    );
 }
 
 #[gpui::test]
@@ -4654,8 +4730,21 @@ pub(crate) fn init_test(cx: &mut TestAppContext) -> Arc<AppState> {
         theme_settings::init(theme::LoadThemes::JustBase, cx);
         super::init(cx);
         editor::init(cx);
+        // Most tests check file matches only; file contents would add text matches.
+        set_include_symbols_and_text(false, cx);
         state
     })
+}
+
+fn set_include_symbols_and_text(enabled: bool, cx: &mut App) {
+    cx.update_global::<SettingsStore, _>(|store, cx| {
+        store.update_user_settings(cx, |settings| {
+            settings
+                .file_finder
+                .get_or_insert_default()
+                .include_symbols_and_text = Some(enabled);
+        });
+    });
 }
 
 fn test_path_position(test_str: &str) -> FileSearchQuery {
@@ -4780,7 +4869,7 @@ fn collect_search_matches(picker: &Picker<FileFinderDelegate>) -> SearchEntries 
             }
             Match::CreateNew(_) => {}
             Match::Channel { .. } => {}
-            Match::Symbol(_) => {}
+            Match::Symbol(_) | Match::Text(_) => {}
         }
     }
     search_entries
@@ -5006,6 +5095,7 @@ fn assert_match_at_position(
         Match::CreateNew(project_path) => project_path.path.file_name(),
         Match::Channel { channel_name, .. } => Some(channel_name.as_str()),
         Match::Symbol(symbol) => Some(&*symbol.name),
+        Match::Text(text_match) => Some(text_match.line.as_str()),
     }
     .unwrap();
     assert_eq!(match_file_name, expected_file_name);
