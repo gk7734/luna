@@ -110,7 +110,24 @@ async fn read_password(service: &str, account: Option<&str>) -> Result<Option<St
     let Some(output) = run_security(&args).await? else {
         return Ok(None);
     };
-    Ok(Some(output.trim_end_matches('\n').to_string()))
+    Ok(Some(decode_password_output(output.trim_end_matches('\n'))))
+}
+
+/// `security -w` prints a password as bare hex when it has bytes outside printable ASCII, such as
+/// a Korean name in the account details. The passwords stored here are JSON objects, which are
+/// never all hex digits, so hex output is always the encoded form.
+fn decode_password_output(output: &str) -> String {
+    let is_hex = !output.is_empty()
+        && output.len().is_multiple_of(2)
+        && output.bytes().all(|byte| byte.is_ascii_hexdigit());
+    if !is_hex {
+        return output.to_string();
+    }
+    let bytes = (0..output.len())
+        .step_by(2)
+        .filter_map(|index| u8::from_str_radix(&output[index..index + 2], 16).ok())
+        .collect::<Vec<_>>();
+    String::from_utf8(bytes).unwrap_or_else(|_| output.to_string())
 }
 
 /// The password goes in as hex, as Claude Code passes it, so JSON quoting can't break it.
@@ -219,6 +236,15 @@ mod tests {
         let attributes = "keychain: \"/Users/someone/Library/Keychains/login.keychain-db\"\nattributes:\n    \"acct\"<blob>=\"someone\"\n    \"svce\"<blob>=\"Claude Code-credentials\"\n";
         assert_eq!(account_attribute(attributes).as_deref(), Some("someone"));
         assert_eq!(account_attribute("attributes:\n"), None);
+    }
+
+    #[test]
+    fn test_decodes_passwords_security_prints_as_hex() {
+        assert_eq!(
+            decode_password_output("7b226e616d65223a22ec9db4eba684227d"),
+            r#"{"name":"이름"}"#
+        );
+        assert_eq!(decode_password_output(r#"{"name":"abc"}"#), r#"{"name":"abc"}"#);
     }
 
     #[test]
